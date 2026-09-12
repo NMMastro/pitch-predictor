@@ -1,0 +1,6 @@
+# Data acquisition
+pybaseball>=2.2.7   # Statcast / Baseball Savant API wrapper
+
+# Data handling
+pandas>=2.0
+pyarrow>=14.0       # efficient Parquet storage for pitch-level data

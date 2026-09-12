@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Data (pulled from Statcast, regenerable — don't commit)
+# Anchored to repo root so it doesn't also match src/data/
+/data/
+
+# pybaseball request cache
+.pybaseball/
+
+# OS
+.DS_Store
