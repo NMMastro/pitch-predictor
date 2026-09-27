@@ -3,10 +3,12 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
 
 # Data (pulled from Statcast, regenerable — don't commit)
 # Anchored to repo root so it doesn't also match src/data/
 /data/
+/results/
 
 # pybaseball request cache
 .pybaseball/
