@@ -6,11 +6,14 @@ a handful of days), concatenated, and written to a single Parquet file.
 Examples
 --------
 Pull a single day (quick smoke test):
-    python src/data/fetch_statcast.py --start 2024-07-01 --end 2024-07-01
+    python src/data-retrieval/fetch_statcast.py --start 2024-07-01 --end 2024-07-01
 
 Pull a full regular season:
-    python src/data/fetch_statcast.py --start 2024-03-28 --end 2024-09-29 \
+    python src/data-retrieval/fetch_statcast.py --start 2024-03-28 --end 2024-09-29 \
         --out data/raw/statcast_2024.parquet
+
+For multiple full seasons use ``fetch_seasons.py`` instead -- it checkpoints
+each month to disk so an interrupted run resumes instead of restarting.
 """
 
 from __future__ import annotations
