@@ -256,3 +256,76 @@ Excluded as current-pitch inputs (allowed only as lagged features of previous pi
 
 `arm_angle`, `bat_speed` and `swing_length` are excluded entirely — all three are 100% null through 2018, and
 `bat_speed` is still 100% null in 2023.
+
+
+
+**Columns to pull:**
+
+pitch_type : FF FF FF
+game_date : 2016-04-04 2016-04-04 2016-04-04
+release_speed : 92.7 94.4 94.0
+release_pos_x : -3.25 -3.23 -3.29
+release_pos_z : 5.56 5.4 5.33
+player_name : Scherzer, Max Scherzer, Max Scherzer, Max
+batter : 542255 542255 542255
+pitcher : 453286 453286 453286
+description : ball called_strike foul****
+zone : 11 11 4
+game_type : R R R
+stand : L L L
+p_throws : R R R
+home_team : ATL ATL ATL*****
+away_team : WSH WSH WSH*****
+hit_location : <NA> <NA> <NA>
+bb_type : nan nan nan
+balls : 0 1 1
+strikes : 0 0 1
+pfx_x : -1.13 -1.13 -1.13
+pfx_z : 1.22 1.15 0.96
+plate_x : -3.1003595467161515 -1.0983216300811458 -0.4830654397832024
+plate_z : 3.670098325549846 2.373123272377753 2.1755680797836945
+on_3b : <NA> <NA> <NA>
+on_2b : <NA> <NA> <NA>
+on_1b : <NA> <NA> <NA>
+outs_when_up : 0 0 0
+inning : 1 1 1
+inning_topbot : Bot Bot Bot
+hc_x : <NA> <NA> <NA> *Not sure where this is reffering to*
+hc_y : <NA> <NA> <NA> 
+fielder_2 : 467092 467092 467092 *Catcher*
+vx0 : 3.283791816243859 8.474494654609794 10.162315030982828
+vy0 : -136.02842203010368 -138.00320865834968 -137.34027668531908
+vz0 : -1.0862703164194891 -4.163312204611653 -3.9193505378316367
+ax : -14.27 -15.73 -15.89
+ay : 29.77 25.78 26.78
+az : -17.28 -17.02 -19.49
+sz_top : 2.96 2.97 3.07
+sz_bot : 1.11 1.19 1.32
+hit_distance_sc : <NA> <NA> <NA>
+launch_speed : <NA> <NA> <NA>
+launch_angle : <NA> <NA> <NA>
+effective_speed : <NA> <NA> <NA>
+release_spin_rate : <NA> <NA> <NA>
+release_extension : <NA> <NA> <NA>
+fielder_3 : 475582 475582 475582
+fielder_4 : 502517 502517 502517
+fielder_5 : 543685 543685 543685
+fielder_6 : 457787 457787 457787
+fielder_7 : 150029 150029 150029
+fielder_8 : 519184 519184 519184
+fielder_9 : 547180 547180 547180
+at_bat_number : 7 7 7
+pitch_number : 1 2 3
+pitch_name : 4-Seam Fastball 4-Seam Fastball 4-Seam Fastball
+bat_score : 0 0 0
+fld_score : 1 1 1
+spin_axis : <NA> <NA> <NA>
+bat_win_exp : 0.448 0.452 0.447
+age_pit_legacy : 31 31 31
+age_bat_legacy : 25 25 25
+n_thruorder_pitcher : 1 1 1
+n_priorpa_thisgame_player_at_bat : 0 0 0
+pitcher_days_since_prev_game : <NA> <NA> <NA>
+batter_days_since_prev_game : <NA> <NA> <NA>
+pitcher_days_until_next_game : 7 7 7
+batter_days_until_next_game : 2 2 2
