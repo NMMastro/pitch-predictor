@@ -121,7 +121,7 @@ buckets = {
 }
 
 
-# TODO FIGURE THIS OUT
+# Build a list of all Cols which we wish to drop
 ALL_EXCLUDED = (
     EXCL_FLIGHT_RELEASE + EXCL_OUTCOME + EXCL_POST_STATE
     + EXCL_V1 + EXCL_NULL + DEAD
@@ -166,7 +166,7 @@ def verify_and_clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     the data and the Section 6 contract.
     """
 
-    # TODO WHY IS THIS USEFUL
+    # Basic checks to make sure that all columns are accounted for (either getting dropped or included)
     assigned = {c for cols in buckets.values() for c in cols}
     unassigned = [c for c in df.columns if c not in assigned]
     if unassigned:
@@ -177,6 +177,9 @@ def verify_and_clean_columns(df: pd.DataFrame) -> pd.DataFrame:
         if missing:
             print(f"[warn] listed but absent in data ({name}): {missing}")
 
+
+    # actually drop the rows that we are not going to be using in the transformer
+    # then return the new dataframe
     drop_targets = [c for c in ALL_EXCLUDED if c in df.columns]
     return df.drop(columns=drop_targets)
 
@@ -206,9 +209,11 @@ def encode(df: pd.DataFrame, min_batter_count: int = MIN_BATTER_COUNT) -> pd.Dat
     id codes, and integer codes for the lagged categoricals. Scaling is NOT done
     here — it is stateful and must be fit on train only.
     """
+
+    # sorts the pitches properly to ensure that data is processed in the proper order
     out = df.sort_values(SORT_KEYS).reset_index(drop=True).copy()
 
-    # Handedness -> booleans.
+    # Handedness -> booleans. 1 if lefty, 0 if righty
     if "stand" in out.columns:
         out["is_LHB"] = (out["stand"] == "L").astype("int64")
     if "p_throws" in out.columns:
@@ -286,7 +291,7 @@ def _lag_columns() -> list[str]:
     """6b lag columns that are present after encoding (continuous ones)."""
     return [c for c in PREV_PITCH_LAGGED]
 
-
+# THIS IS ONLY FOR XGBOOST, not TRANSFORMER
 def build_tabular(df: pd.DataFrame, window: int = WINDOW) -> pd.DataFrame:
     """Flatten the previous-``window`` pitches into lag columns (baseline models).
 
