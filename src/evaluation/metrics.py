@@ -31,27 +31,30 @@ from sklearn.metrics import (
     top_k_accuracy_score,
 )
 
-PITCH_CLASSES: list[str] = [
-    "FF", "SI", "SL", "CH", "FC", "ST", "CU", "FS", "KC", "SV", "OTHER",
-]
-OTHER_CODES: frozenset[str] = frozenset({"EP", "FO", "CS", "KN", "SC"})
-DROP_CODES: frozenset[str] = frozenset({"PO", "IN", "UN", "FA"})
-ZONE_CLASSES: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
-KEEP_GAME_TYPES: frozenset[str] = frozenset({"R", "F", "D", "L", "W"})
+# Defined in features.schema; imported here so `from evaluation import ...` keeps working.
+from features.schema import (
+    DROP_CODES,
+    KEEP_GAME_TYPES,
+    MERGE_CODES,
+    OTHER_CODES,
+    PITCH_CLASSES,
+    ZONE_CLASSES,
+)
 
 
 def map_pitch_classes(pitch_type: pd.Series) -> pd.Series:
     """Map raw Statcast ``pitch_type`` codes onto :data:`PITCH_CLASSES`.
 
-    Rare codes collapse to ``OTHER``; non-pitch codes and nulls become NaN.
+    Variants merge into their parent class, rare codes collapse to ``OTHER``,
+    and non-pitch codes and nulls become NaN.
     """
-    s = pitch_type.astype("object")
+    s = pitch_type.astype("object").replace(MERGE_CODES)
     out = s.where(~s.isin(OTHER_CODES), "OTHER").where(~s.isin(DROP_CODES), np.nan)
     unknown = set(out.dropna().unique()) - set(PITCH_CLASSES)
     if unknown:
         raise ValueError(
             f"pitch_type codes not covered by the taxonomy: {sorted(unknown)}. "
-            "Add them to PITCH_CLASSES, OTHER_CODES or DROP_CODES."
+            "Add them to PITCH_CLASSES, MERGE_CODES, OTHER_CODES or DROP_CODES."
         )
     return out
 

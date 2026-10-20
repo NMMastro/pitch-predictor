@@ -59,7 +59,8 @@ def test_macro_f1_averages_over_all_classes_not_just_present_ones():
     y = ["FF"] * 90 + ["SL"] * 10
     m = evaluate(y, _onehot(["FF"] * 100))
     assert m["accuracy"] == pytest.approx(0.90)
-    assert m["macro_f1"] == pytest.approx(0.0861, abs=1e-3)
+    ff_f1 = 2 * 0.9 * 1.0 / (0.9 + 1.0)   # precision 0.9, recall 1.0; every other class scores 0
+    assert m["macro_f1"] == pytest.approx(ff_f1 / K, abs=1e-6)
 
 
 def test_per_class_can_be_switched_off():
@@ -161,11 +162,16 @@ def test_align_proba_rejects_mismatched_label_sets():
 # --- preprocessing helpers ---------------------------------------------------
 
 def test_map_pitch_classes_pools_and_drops():
-    s = pd.Series(["FF", "KN", "SC", "PO", "IN", "UN", "FA", None, "ST"])
+    s = pd.Series(["FF", "KN", "SC", "PO", "IN", "UN", "FA", None, "SV", "AB"])
     out = map_pitch_classes(s)
     assert out.tolist()[:3] == ["FF", "OTHER", "OTHER"]
-    assert out.isna().sum() == 5          # PO, IN, UN, FA, None
-    assert out.iloc[8] == "ST"
+    assert out.isna().sum() == 6          # PO, IN, UN, FA, None, AB
+    assert out.iloc[8] == "SV"
+
+
+def test_map_pitch_classes_merges_variants_into_parent():
+    out = map_pitch_classes(pd.Series(["ST", "FO", "CS", "SL", "FS", "CU"]))
+    assert out.tolist() == ["SL", "FS", "CU", "SL", "FS", "CU"]
 
 
 def test_map_pitch_classes_rejects_unknown_code():

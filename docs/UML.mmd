@@ -28,7 +28,7 @@ flowchart TB
 
     subgraph MODEL["src/model/ — the transformer (PLANNED)"]
         DS["dataset.py<br/><i>sequence batching, padding</i>"]
-        NET["transformer.py<br/><i>embeddings + attention,<br/>11-class head</i>"]
+        NET["transformer.py<br/><i>embeddings + attention,<br/>10-class head</i>"]
         TR["train.py<br/><i>train loop, split, checkpoints</i>"]
         PR["predict.py<br/><i>load model → probabilities</i>"]
     end
