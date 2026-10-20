@@ -4,3 +4,6 @@ pybaseball>=2.2.7   # Statcast / Baseball Savant API wrapper
 # Data handling
 pandas>=2.0
 pyarrow>=14.0       # efficient Parquet storage for pitch-level data
+
+# Modeling / evaluation
+scikit-learn>=1.3   # metrics in src/evaluation (log_loss, top_k_accuracy_score, etc.)

@@ -15,3 +15,9 @@ venv/
 
 # OS
 .DS_Store
+
+
+
+# local testing 
+list_features.py
+notebooks/
