@@ -31,17 +31,7 @@ from sklearn.metrics import (
     top_k_accuracy_score,
 )
 
-# Defined in features.schema; imported here so `from evaluation import ...` keeps working.
-from features.schema import (
-    DROP_CODES,
-    KEEP_GAME_TYPES,
-    MERGE_CODES,
-    OTHER_CODES,
-    PITCH_CLASSES,
-    ZONE_CLASSES,
-)
-# Moved to features.clean; imported here so `from evaluation import prepare` keeps working.
-from features.clean import map_pitch_classes, prepare
+from features.schema import PITCH_CLASSES
 
 
 def align_proba(
