@@ -41,20 +41,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from features.schema import (  # noqa: E402
     CHRONO_KEYS,
     CLEAN_COLUMNS,
+    CLEAN_PATH,
     DROP_CODES,
     KEEP_GAME_TYPES,
     MERGE_CODES,
     MIN_PRIOR_PITCHES,
     OTHER_CODES,
     PITCH_CLASSES,
+    PITCH_KEY,
     SPLITS,
 )
 
 RAW_DIR = Path("data/raw")
-OUT_PATH = Path("data/clean/pitches.parquet")
-
-# Identifies one pitch.
-PITCH_KEY = ["game_pk", "at_bat_number", "pitch_number"]
 
 # Never-null columns get plain types, so a surprise null fails here.
 DTYPES: dict[str, str] = {
@@ -129,7 +127,7 @@ DTYPES: dict[str, str] = {
 CATEGORY_COLUMNS = [col for col, dtype in DTYPES.items() if dtype == "category"]
 
 
-def clean(season_files: list[Path], out: Path = OUT_PATH) -> pd.DataFrame:
+def clean(season_files: list[Path], out: Path = CLEAN_PATH) -> pd.DataFrame:
     """Raw season files -> one clean pitch table, written to ``out``."""
     seasons = [clean_season(path) for path in season_files]
 
@@ -269,7 +267,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--seasons", type=int, nargs="+", help="default: every season in --raw-dir")
     parser.add_argument("--raw-dir", type=Path, default=RAW_DIR)
-    parser.add_argument("--out", type=Path, default=OUT_PATH)
+    parser.add_argument("--out", type=Path, default=CLEAN_PATH)
     parser.add_argument("--force", action="store_true", help="overwrite an existing clean table")
     args = parser.parse_args()
 
