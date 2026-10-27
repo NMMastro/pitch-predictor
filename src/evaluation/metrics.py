@@ -40,42 +40,8 @@ from features.schema import (
     PITCH_CLASSES,
     ZONE_CLASSES,
 )
-
-
-def map_pitch_classes(pitch_type: pd.Series) -> pd.Series:
-    """Map raw Statcast ``pitch_type`` codes onto :data:`PITCH_CLASSES`.
-
-    Variants merge into their parent class, rare codes collapse to ``OTHER``,
-    and non-pitch codes and nulls become NaN.
-    """
-    s = pitch_type.astype("object").replace(MERGE_CODES)
-    out = s.where(~s.isin(OTHER_CODES), "OTHER").where(~s.isin(DROP_CODES), np.nan)
-    unknown = set(out.dropna().unique()) - set(PITCH_CLASSES)
-    if unknown:
-        raise ValueError(
-            f"pitch_type codes not covered by the taxonomy: {sorted(unknown)}. "
-            "Add them to PITCH_CLASSES, MERGE_CODES, OTHER_CODES or DROP_CODES."
-        )
-    return out
-
-
-def prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply the design-doc row filters and attach target columns.
-
-    Drops spring training, null ``pitch_type`` and the non-pitch codes, then
-    adds ``pitch_class``. If a ``zone`` column is present, adds ``zone_class``
-    as a nullable integer; callers training the zone model should drop its
-    nulls themselves.
-
-    The 25-prior-pitch rule is not applied here: it needs pitch history, so it
-    belongs in the feature pipeline after the running averages are computed.
-    """
-    out = df[df["game_type"].isin(KEEP_GAME_TYPES)].copy()
-    out["pitch_class"] = map_pitch_classes(out["pitch_type"])
-    out = out.dropna(subset=["pitch_class"])
-    if "zone" in out.columns:
-        out["zone_class"] = out["zone"].astype("Int64")
-    return out
+# Moved to features.clean; imported here so `from evaluation import prepare` keeps working.
+from features.clean import map_pitch_classes, prepare
 
 
 def align_proba(
