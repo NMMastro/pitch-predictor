@@ -1,103 +1,20 @@
 """Tabular features: clean pitch table -> one wide feature table for XGBoost.
 
-Input:  data/clean/pitches.parquet (from clean.py).
-Output: data/features/tabular.parquet, one row per pitch: rid, split, eligible,
-        game_year, the labels pitch_class and zone_class, then every feature
-        below. Rows are grouped by pitcher; join to the clean table on rid.
+Input:  data/clean/pitches.parquet (from clean.py), encoded by encode.py.
+Output: data/features/tabular.parquet, one row per pitch: META_COLUMNS, then
+        every feature below. Join to the clean table on rid.
 
-Every feature for a pitch uses only its pre-pitch state and earlier pitches.
+Added features (FEATURE_GROUPS; each uses only earlier pitches):
+  game_state        the encoded pre-pitch columns
+  pitcher_types     p_type_{slice}_{class}: the pitcher's pitch-type mix, over
+                    slices career, last200, vs_hand, count, game
+  pitcher_zones     p_zone_{slice}_{zone}: the same over zones, batter's view
+  batter_mix        b_type_*, b_zone_*: how pitchers have attacked this batter
+  previous_pitches  prev*: his last pitches this game (type, zone, result, speed, ...)
+  at_bat            pa_*: this plate appearance so far
+  workload          game_pitch_count, is_starter
 
-Steps, in the order build() runs them:
-
-    1. encode             every pitch as numbers (encode.py)
-
-  Whole table: look across every pitcher, so computed once
-    2. LeagueMix          league mix before each day; not a feature, the mix
-                          that sparse mixes are shrunk toward
-    3. batter_mix         how pitchers have attacked each batter
-
-  Each pitcher (pitcher_features): need only the pitcher's own pitches, so run
-  a batch of pitchers at a time to fit in memory
-    4. game_state
-    5. pitcher_types
-    6. pitcher_zones
-       batter_mix         looked up for these pitches by rid
-    7. previous_pitches
-    8. at_bat
-    9. workload
-
-   10. write              each batch into one parquet file as it is built
-
-Each feature group below is a key of FEATURE_GROUPS and the function that builds it.
-
-Features
---------
-Categories are stored as integer codes (missing = none); see CATEGORICAL_FEATURES.
-
-game_state: known before the pitch
-  <pre-pitch columns>     schema.PRE_PITCH_COLUMNS as they are, except:
-  inning                  capped at 10
-  if/of_fielding_alignment  category
-  is_LHB                  1 if the batter bats left
-  is_LHP                  1 if the pitcher throws left
-  same_hand               1 if batter and pitcher are the same hand
-  is_inning_top           1 in the top of the inning
-
-pitcher_types: share of each pitch type among the pitcher's earlier pitches
-  p_type_{slice}_{class}  class is one of PITCH_CLASSES; slice is
-                            career   all his earlier pitches
-                            last200  his last 200 pitches
-                            vs_hand  his earlier pitches to batters of this hand
-                            count    his earlier pitches in this ball-strike count
-                            game     his earlier pitches this game
-  pitcher_prior_pitches   number of his earlier pitches, all seasons
-
-pitcher_zones: the same, over zones as the batter sees them
-  p_zone_{slice}_{zone}   zone is up_in, up_mid, up_away, mid_in, ... low_away,
-                          out_up_in, out_up_away, out_low_in, out_low_away.
-                          A left-handed batter's zones are mirrored, so "in" is
-                          inside for everyone.
-
-batter_mix: how pitchers have attacked this batter on earlier pitches
-  b_type_{class}          share of each pitch type
-  b_zone_{zone}           share of each zone
-  batter_prior_pitches    number of earlier pitches he has seen
-
-  Every mix above adds PSEUDO_PITCHES of a broader mix, so it is sensible
-  with little history: career and batter mixes toward the league mix (all
-  earlier days), every other slice toward the pitcher's career mix.
-
-previous_pitches: this pitcher's earlier pitches this game (missing on his first)
-  prev{k}_type            pitch type k pitches ago, k = 1..PREV_TYPE_LAGS (category)
-  prev{k}_zone            zone k pitches ago, k = 1..PREV_ZONE_LAGS, batter's view (category)
-  prev_result             last pitch's result (category): ball, called_strike,
-                          swinging_strike, foul, in_play, hit_by_pitch
-  prev_swung              1 if the batter swung at the last pitch
-  prev_same_pa            1 if the last pitch was in this plate appearance
-  prev_speed              last pitch's release speed (mph)
-  prev_speed_vs_avg       that speed minus his average for that pitch type over
-                          his earlier pitches this season
-  prev_spin               spin rate (rpm)
-  prev_spin_axis          spin axis (degrees)
-  prev_extension          release extension (ft)
-  prev_pfx_x, prev_pfx_z  horizontal and vertical movement (ft)
-  prev_release_x, _z      release point (ft)
-  prev_plate_x            horizontal location, batter's view (negative = inside)
-  prev_plate_z            height at the plate (ft)
-  last_pa_result          how his last finished plate appearance this game ended
-                          (category): strikeout, walk, out, reached, single,
-                          extra_base, home_run
-
-at_bat: this plate appearance so far
-  pa_pitch_idx            pitches already thrown in it
-  pa_n_fastball           of those, fastballs (FF, SI, FC)
-  pa_n_breaking           breaking balls (SL, CU, KC, SV)
-  pa_n_offspeed           off-speed (CH, FS)
-  streak_same_type        same pitch type in a row, ending with the last pitch
-
-workload: this game so far
-  game_pitch_count        pitches he has already thrown this game
-  is_starter              1 if his first pitch of the game was in the 1st inning
+Sparse mixes are shrunk toward a broader one (PSEUDO_PITCHES, league_mixes).
 
 Usage:
     python src/features/tabular_features.py
@@ -108,14 +25,10 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -126,7 +39,6 @@ from features.schema import (  # noqa: E402
     FAMILIES,
     PITCH_CLASSES,
     PITCH_RESULTS,
-    PITCHER_CHRONO_KEYS,
     SWINGS,
     ZONE_CLASSES,
     ZONE_LABELS,
@@ -138,7 +50,6 @@ PSEUDO_PITCHES = 20.0   # pitches of the broader mix added to every mix
 RECENT_PITCHES = 200    # length of the "last 200" window
 PREV_TYPE_LAGS = 5      # pitch types of the last 5 pitches
 PREV_ZONE_LAGS = 3      # zones of the last 3 pitches
-PITCHER_BATCHES = 8     # pitchers are processed in this many batches to fit in memory
 
 
 # --- feature columns ----------------------------------------------------------
@@ -192,86 +103,46 @@ META_COLUMNS = ["rid", "split", "eligible", "game_year", "pitch_class", "zone_cl
 
 # --- pipeline -----------------------------------------------------------------
 
-def build(table: pd.DataFrame, out: Path = OUT_PATH, n_batches: int = PITCHER_BATCHES) -> int:
-    """Clean table -> tabular feature table, written to ``out``. Returns the row count."""
-    table = encode(table)
+def build(table: pd.DataFrame, out: Path = OUT_PATH) -> int:
+    """Clean table -> tabular feature table, written to ``out``. Returns the row count.
 
-    # Whole table: these look across every pitcher, so they are computed once.
-    league = LeagueMix.from_table(table)
-    batter = batter_mix(table, league)
-
-    # Each pitcher: these need only the pitcher's own pitches, so they run a
-    # batch of pitchers at a time to fit in memory, and each batch is written
-    # as soon as it is built.
-    batches = pitcher_batches(table, n_batches)
-    features = (pitcher_features(batch, batter, league) for batch in batches)
-    return write(features, out)
-
-
-# --- whole table: features that look across pitchers --------------------------
-
-@dataclass
-class LeagueMix:
-    """League pitch-type and zone mix from every pitch on earlier dates.
-
-    Not a feature: the mix that career and batter mixes are shrunk toward when
-    they have little history. ``lookup`` gives each pitch its day's mix.
+    Every step works on the whole table in rid (real-time) order.
     """
-
-    dates: np.ndarray
-    types: np.ndarray  # (n_dates, n_types)
-    zones: np.ndarray  # (n_dates, n_zones)
-
-    @classmethod
-    def from_table(cls, table: pd.DataFrame) -> LeagueMix:
-        dates, day = np.unique(table["game_date"].to_numpy(), return_inverse=True)
-        return cls(
-            dates,
-            _mix_before_each_day(day, table["type_code"].to_numpy(), len(PITCH_CLASSES)),
-            _mix_before_each_day(day, table["zone_code"].to_numpy(), len(ZONE_CLASSES)),
-        )
-
-    def lookup(self, game_date: pd.Series) -> tuple[np.ndarray, np.ndarray]:
-        day = np.searchsorted(self.dates, game_date.to_numpy())
-        return self.types[day], self.zones[day]
-
-
-def batter_mix(table: pd.DataFrame, league: LeagueMix) -> pd.DataFrame:
-    """How pitchers have attacked each batter so far, shrunk toward the league. Indexed by rid."""
-    league_types, league_zones = league.lookup(table["game_date"])
-    batter = table["batter"].to_numpy()
-    type_counts = prior_counts(one_hot(table["type_code"], len(PITCH_CLASSES)), batter)
-    zone_counts = prior_counts(one_hot(table["zone_code"], len(ZONE_CLASSES)), batter)
-
-    columns = {
-        **_mix_columns("b_type", shrink(type_counts, league_types), PITCH_CLASSES),
-        **_mix_columns("b_zone", shrink(zone_counts, league_zones), ZONE_LABELS),
-        "batter_prior_pitches": type_counts.sum(axis=1),
-    }
-    return pd.DataFrame(columns, index=table["rid"].to_numpy())
-
-
-# --- each pitcher: features from the pitcher's own pitches --------------------
-
-def pitcher_features(batch: pd.DataFrame, batter: pd.DataFrame, league: LeagueMix) -> pd.DataFrame:
-    """Every feature group for one batch of pitchers, in pitcher-then-time order."""
-    df = batch.sort_values(PITCHER_CHRONO_KEYS).reset_index(drop=True)
+    table = encode(table)
+    league_types, league_zones = league_mixes(table)
 
     features = pd.concat([
-        game_state(df),
-        pitcher_types(df, league),
-        pitcher_zones(df, league),
-        batter.loc[df["rid"]].reset_index(drop=True),  # batter_mix, already built
-
-        previous_pitches(df),
-        at_bat(df),
-        workload(df),
+        game_state(table),
+        pitcher_types(table, league_types),
+        pitcher_zones(table, league_zones),
+        batter_mix(table, league_types, league_zones),
+        previous_pitches(table),
+        at_bat(table),
+        workload(table),
     ], axis=1)
-
     if list(features.columns) != FEATURE_COLUMNS:
         raise AssertionError("feature columns do not match FEATURE_GROUPS")
-    return pd.concat([df[META_COLUMNS], features], axis=1)
 
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".parquet.tmp")
+    pd.concat([table[META_COLUMNS], features], axis=1).to_parquet(tmp, index=False)
+    tmp.replace(out)
+    return len(table)
+
+
+def league_mixes(table: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Per pitch: the league's pitch-type and zone mix over every earlier date.
+
+    Not a feature: the mix that career and batter mixes are shrunk toward when
+    they have little history.
+    """
+    _, day = np.unique(table["game_date"].to_numpy(), return_inverse=True)
+    types = _mix_before_each_day(day, table["type_code"].to_numpy(), len(PITCH_CLASSES))
+    zones = _mix_before_each_day(day, table["zone_code"].to_numpy(), len(ZONE_CLASSES))
+    return types[day], zones[day]
+
+
+# --- feature groups, in FEATURE_GROUPS order ----------------------------------
 
 def game_state(df: pd.DataFrame) -> pd.DataFrame:
     """The pre-pitch columns and encode()'s flags, with fielding alignments as categories."""
@@ -281,9 +152,8 @@ def game_state(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def pitcher_types(df: pd.DataFrame, league: LeagueMix) -> pd.DataFrame:
+def pitcher_types(df: pd.DataFrame, league_types: np.ndarray) -> pd.DataFrame:
     """The pitcher's pitch-type mix over his earlier pitches, five ways."""
-    league_types, _ = league.lookup(df["game_date"])
     mixes = _slice_mixes(df, one_hot(df["type_code"], len(PITCH_CLASSES)), league_types)
 
     columns = {}
@@ -293,15 +163,27 @@ def pitcher_types(df: pd.DataFrame, league: LeagueMix) -> pd.DataFrame:
     return pd.DataFrame(columns)
 
 
-def pitcher_zones(df: pd.DataFrame, league: LeagueMix) -> pd.DataFrame:
+def pitcher_zones(df: pd.DataFrame, league_zones: np.ndarray) -> pd.DataFrame:
     """The pitcher's zone mix (batter's view) over his earlier pitches, five ways."""
-    _, league_zones = league.lookup(df["game_date"])
     mixes = _slice_mixes(df, one_hot(df["zone_code"], len(ZONE_CLASSES)), league_zones)
 
     columns = {}
     for name, mix in mixes.items():
         columns |= _mix_columns(f"p_zone_{name}", mix, ZONE_LABELS)
     return pd.DataFrame(columns)
+
+
+def batter_mix(df: pd.DataFrame, league_types: np.ndarray, league_zones: np.ndarray) -> pd.DataFrame:
+    """How pitchers have attacked this batter on earlier pitches, shrunk toward the league."""
+    batter = df["batter"].to_numpy()
+    type_counts = prior_counts(one_hot(df["type_code"], len(PITCH_CLASSES)), batter)
+    zone_counts = prior_counts(one_hot(df["zone_code"], len(ZONE_CLASSES)), batter)
+
+    return pd.DataFrame({
+        **_mix_columns("b_type", shrink(type_counts, league_types), PITCH_CLASSES),
+        **_mix_columns("b_zone", shrink(zone_counts, league_zones), ZONE_LABELS),
+        "batter_prior_pitches": type_counts.sum(axis=1),
+    })
 
 
 def previous_pitches(df: pd.DataFrame) -> pd.DataFrame:
@@ -352,10 +234,10 @@ def at_bat(df: pd.DataFrame) -> pd.DataFrame:
     by_family = prior_counts(one_hot(df["family_code"], len(FAMILIES)), pa)
 
     # Length of the run of one pitch type that ended with the previous pitch.
-    type_code = df["type_code"].to_numpy()
-    new_run = np.r_[True, (type_code[1:] != type_code[:-1]) | (game[1:] != game[:-1])]
-    run_id = np.cumsum(new_run)
-    run_length = pd.Series(run_id).groupby(run_id).cumcount() + 1
+    type_code = pd.Series(df["type_code"].to_numpy())
+    new_run = type_code != type_code.groupby(game).shift(1)
+    run_id = new_run.groupby(game).cumsum()
+    run_length = type_code.groupby([game, run_id]).cumcount() + 1
 
     return pd.DataFrame({
         "pa_pitch_idx": pd.Series(pa).groupby(pa).cumcount().to_numpy(np.int16),
@@ -373,33 +255,6 @@ def workload(df: pd.DataFrame) -> pd.DataFrame:
         "game_pitch_count": by_game.cumcount().to_numpy(np.int16),
         "is_starter": (by_game["inning"].transform("first") == 1).to_numpy(np.int8),
     })
-
-
-# --- batching and writing -----------------------------------------------------
-
-def pitcher_batches(table: pd.DataFrame, n_batches: int) -> Iterator[pd.DataFrame]:
-    """The table in ``n_batches`` batches, each holding whole pitchers."""
-    for k in range(n_batches):
-        yield table[table["pitcher"] % n_batches == k]
-
-
-def write(parts: Iterable[pd.DataFrame], out: Path) -> int:
-    """Write every part into one parquet file, via a temp file. Returns the row count."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".parquet.tmp")
-    writer, rows = None, 0
-    for k, part in enumerate(parts, start=1):
-        arrow_part = pa.Table.from_pandas(part, preserve_index=False)
-        writer = writer or pq.ParquetWriter(tmp, arrow_part.schema)
-        writer.write_table(arrow_part)
-        rows += len(part)
-        print(f"  batch {k}: {len(part):,} rows")
-    if writer is None:
-        raise ValueError("no batches to write")
-    writer.close()
-    tmp.replace(out)
-    return rows
-
 
 
 # --- history helpers: sums over each pitch's earlier pitches ------------------
@@ -489,7 +344,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clean", type=Path, default=CLEAN_PATH)
     parser.add_argument("--out", type=Path, default=OUT_PATH)
-    parser.add_argument("--batches", type=int, default=PITCHER_BATCHES, help="more = less memory")
     parser.add_argument("--force", action="store_true", help="overwrite an existing feature table")
     args = parser.parse_args()
 
@@ -497,7 +351,7 @@ def main() -> None:
         sys.exit(f"{args.out} already exists; pass --force to rebuild")
 
     start = time.time()
-    rows = build(pd.read_parquet(args.clean), args.out, args.batches)
+    rows = build(pd.read_parquet(args.clean), args.out)
     print(f"\nWrote {rows:,} rows x {len(FEATURE_COLUMNS)} features to {args.out} "
           f"({args.out.stat().st_size / 1e6:.0f} MB) in {time.time() - start:.0f}s")
 

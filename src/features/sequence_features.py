@@ -55,9 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from features.encode import encode  # noqa: E402
 from features.schema import (  # noqa: E402
     CLEAN_PATH,
+    ENCODED_PRE_PITCH_COLUMNS,
     PITCHER_CHRONO_KEYS,
-    PRE_PITCH_COLUMNS,
-    TEXT_COLUMNS,
 )
 
 # ==============================================================================
@@ -65,7 +64,6 @@ from features.schema import (  # noqa: E402
 # ==============================================================================
 
 # --- 6a. Current-pitch inputs: known before the pitch, fed directly ---
-INPUT_CONTEXT = PRE_PITCH_COLUMNS
 INPUT_EMBED = ["batter", "pitcher", "fielder_2"]  # fielder_2 = catcher
 
 # --- 6b. Lagged previous-pitch features (described for PRIOR pitches only) ---
@@ -75,13 +73,8 @@ PREV_PITCH_LAGGED = [
 # Which of the lagged columns are categorical (encoded to int codes, not scaled).
 LAGGED_CATEGORICAL = ["pitch_class", "zone_class", "description"]
 
-# The current-pitch (6a) model-input columns after encoding. Single definition,
-# imported by downstream code rather than recomputed.
-MODEL_INPUTS = (
-    [c for c in INPUT_CONTEXT if c not in TEXT_COLUMNS]
-    + ["is_LHB", "is_LHP", "is_inning_top"]
-    + INPUT_EMBED
-)
+# The current-pitch (6a) columns in X_ctx, in order.
+MODEL_INPUTS = ENCODED_PRE_PITCH_COLUMNS + INPUT_EMBED
 
 # Continuous 6a inputs that get scaled. Counts/ordinals and booleans are left
 # alone; ids are embedded, not scaled.
