@@ -3,20 +3,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from evaluation import (
-    PITCH_CLASSES,
-    ZONE_CLASSES,
-    align_proba,
-    evaluate,
-    load_scoreboard,
-    log_run,
-    map_pitch_classes,
-    prepare,
-)
+from evaluation import align_proba, evaluate, load_scoreboard, log_run
+from features.schema import PITCH_CLASSES, ZONE_CLASSES
 
 K = len(PITCH_CLASSES)
 
@@ -59,7 +50,8 @@ def test_macro_f1_averages_over_all_classes_not_just_present_ones():
     y = ["FF"] * 90 + ["SL"] * 10
     m = evaluate(y, _onehot(["FF"] * 100))
     assert m["accuracy"] == pytest.approx(0.90)
-    assert m["macro_f1"] == pytest.approx(0.0861, abs=1e-3)
+    ff_f1 = 2 * 0.9 * 1.0 / (0.9 + 1.0)   # precision 0.9, recall 1.0; every other class scores 0
+    assert m["macro_f1"] == pytest.approx(ff_f1 / K, abs=1e-6)
 
 
 def test_per_class_can_be_switched_off():
@@ -156,43 +148,6 @@ def test_align_proba_rejects_mismatched_label_sets():
     wrong = [c for c in sorted(PITCH_CLASSES) if c != "OTHER"] + ["XX"]
     with pytest.raises(ValueError, match="different label sets"):
         align_proba(np.full((2, K), 1 / K), wrong)
-
-
-# --- preprocessing helpers ---------------------------------------------------
-
-def test_map_pitch_classes_pools_and_drops():
-    s = pd.Series(["FF", "KN", "SC", "PO", "IN", "UN", "FA", None, "ST"])
-    out = map_pitch_classes(s)
-    assert out.tolist()[:3] == ["FF", "OTHER", "OTHER"]
-    assert out.isna().sum() == 5          # PO, IN, UN, FA, None
-    assert out.iloc[8] == "ST"
-
-
-def test_map_pitch_classes_rejects_unknown_code():
-    with pytest.raises(ValueError, match="not covered"):
-        map_pitch_classes(pd.Series(["FF", "ZZ"]))
-
-
-def test_prepare_drops_spring_training_and_nulls():
-    df = pd.DataFrame({
-        "game_type": ["R", "S", "W", "R", "R"],
-        "pitch_type": ["FF", "FF", "SL", None, "PO"],
-    })
-    out = prepare(df)
-    assert len(out) == 2                  # R/FF and W/SL survive
-    assert set(out["game_type"]) == {"R", "W"}
-
-
-def test_prepare_attaches_nullable_zone_class():
-    df = pd.DataFrame({
-        "game_type": ["R", "R"],
-        "pitch_type": ["FF", "SL"],
-        "zone": [5.0, None],
-    })
-    out = prepare(df)
-    assert out["zone_class"].dtype == "Int64"
-    assert out["zone_class"].tolist()[0] == 5
-    assert out["zone_class"].isna().sum() == 1
 
 
 # --- scoreboard --------------------------------------------------------------

@@ -9,26 +9,30 @@ flowchart TB
         FS["fetch_seasons.py<br/><i>bulk pull, month chunking,<br/>resumable → data/raw/</i>"]
         FST["fetch_statcast.py<br/><i>single date-range pull</i>"]
         EP["extract_pitcher.py<br/><i>subset one pitcher → data/pitchers/</i>"]
-        LF["list_features.py<br/><i>column/null inventory</i>"]
     end
 
     subgraph DATA["💾 data/ (git-ignored)"]
         RAW["data/raw/statcast_YYYY.parquet<br/><i>10 seasons, 119 cols, all game types</i>"]
         PIT["data/pitchers/453286.parquet<br/><i>Scherzer, unfiltered</i>"]
-        FEAT["data/features/*.parquet<br/><i>model-ready tensors + label</i>"]
+        CLEAN["data/clean/pitches.parquet<br/><i>one row per pitch, labels,<br/>split + eligible tags</i>"]
+        FEAT["data/features/tabular.parquet<br/><i>one row per pitch,<br/>XGBoost features + labels</i>"]
     end
 
-    subgraph FEATURES["src/features/ — feature definition (PLANNED)"]
-        BF["build_features.py<br/><i>canonical column lists,<br/>transforms, lag/window builder,<br/>boundary flags, no-leakage guarantee</i>"]
+    subgraph FEATURES["src/features/ — clean, encode, build features (EXISTS)"]
+        SCH["schema.py<br/><i>shared constants: classes, zones,<br/>splits, keys, column lists</i>"]
+        CL["clean.py<br/><i>filter rows, map classes,<br/>tag split + eligible</i>"]
+        ENC["encode.py<br/><i>every pitch as numbers,<br/>shared by both models (in memory)</i>"]
+        TAB["tabular_features.py<br/><i>pitcher / batter mixes, previous<br/>pitches, at-bat, workload</i>"]
+        SEQ["sequence_features.py<br/><i>embedding ids, train-only scaler,<br/>X_seq + X_ctx (in memory)</i>"]
     end
 
     subgraph EVAL["src/evaluation/ — scoring (EXISTS)"]
-        MET["metrics.py<br/><i>prepare(), PITCH_CLASSES,<br/>evaluate(), align_proba(), log_run()</i>"]
+        MET["metrics.py<br/><i>evaluate(), align_proba(),<br/>log_run(), load_scoreboard()</i>"]
     end
 
     subgraph MODEL["src/model/ — the transformer (PLANNED)"]
         DS["dataset.py<br/><i>sequence batching, padding</i>"]
-        NET["transformer.py<br/><i>embeddings + attention,<br/>11-class head</i>"]
+        NET["transformer.py<br/><i>embeddings + attention,<br/>10-class head</i>"]
         TR["train.py<br/><i>train loop, split, checkpoints</i>"]
         PR["predict.py<br/><i>load model → probabilities</i>"]
     end
@@ -39,46 +43,50 @@ flowchart TB
     end
 
     subgraph CONSUME["Consumers"]
-        NB["notebooks/*.ipynb<br/><i>EDA, sanity-check build_features,<br/>visualize — imports, never redefines</i>"]
-        DEMO["demo / dashboard (PLANNED)<br/><i>uses SAME build_features + predict</i>"]
+        NB["notebooks/*.ipynb (PLANNED)<br/><i>EDA, sanity checks,<br/>visualize — imports, never redefines</i>"]
+        DEMO["demo / dashboard (PLANNED)<br/><i>uses SAME sequence_features + predict</i>"]
     end
 
-    TST["tests/ — test_metrics.py (EXISTS)<br/><i>+ planned: no-leakage test for build_features</i>"]
+    TST["tests/ — test_metrics.py (EXISTS)<br/><i>+ planned: no-leakage tests for<br/>tabular / sequence features</i>"]
 
     FS --> RAW
     FST --> RAW
     RAW --> EP --> PIT
-    PIT --> LF
 
-    PIT --> BF
-    MET -. "prepare(), classes" .-> BF
-    BF --> FEAT
+    RAW --> CL --> CLEAN --> ENC
+    ENC --> TAB --> FEAT
+    ENC --> SEQ
+    SCH -. "classes, keys, columns" .-> CL
+    SCH -.-> ENC
+    SCH -.-> TAB
+    SCH -.-> SEQ
+    SCH -. "classes" .-> MET
 
-    FEAT --> DS --> TR
+    SEQ -- "X_seq, X_ctx" --> DS --> TR
     NET --> TR
     TR --> CK
     TR --> PR
     PR --> MET
     MET --> SB
 
-    DD -. "defines rules for" .-> BF
+    DD -. "defines rules for" .-> SCH
     DD -. "defines rules for" .-> MET
 
-    PIT --> NB
-    BF -. "imports column lists" .-> NB
-    BF --> DEMO
+    CLEAN --> NB
+    SCH -. "imports column lists" .-> NB
+    SEQ --> DEMO
     PR --> DEMO
 
     TST -.-> MET
-    TST -.-> BF
+    TST -.-> TAB
+    TST -.-> SEQ
 
     classDef exists fill:#d4edda,stroke:#28a745,color:#111
     classDef planned fill:#fff3cd,stroke:#ffc107,color:#111,stroke-dasharray: 5 3
     classDef data fill:#e7f1ff,stroke:#0d6efd,color:#111
     classDef contract fill:#f0e6ff,stroke:#8540f5,color:#111
 
-    class FS,FST,EP,LF,MET,TST exists
-    class BF,DS,NET,TR,PR,DEMO planned
-    class RAW,PIT,FEAT,SB,CK data
+    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,MET,TST exists
+    class DS,NET,TR,PR,DEMO,NB planned
+    class RAW,PIT,CLEAN,FEAT,SB,CK data
     class DD contract
-    class NB exists

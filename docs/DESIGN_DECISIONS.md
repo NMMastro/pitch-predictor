@@ -5,32 +5,43 @@ evaluation metrics, and filtering rules.
 
 ## 1. Pitch type classes
 
-Eleven classes. Each common pitch type stands alone; the super-rare types are pooled into `OTHER`.
+Ten classes. Each common pitch type stands alone, three variants are merged into their parent pitch, and the
+super-rare types are pooled into `OTHER`.
 
 | Code | Pitch | 2024 + 2025 pitches | 2024 + 2025 % |
 | --- | --- | --- | --- |
 | `FF` | Four-seam fastball | 461,253 | 31.93% |
-| `SI` | Sinker | 225,986 | 15.65% |
-| `SL` | Slider | 210,344 | 14.56% |
+| `SL` | Slider, including sweeper (`ST`) | 319,588 | 22.13% |
+| `SI` | Sinker | 225,984 | 15.65% |
 | `CH` | Changeup | 148,068 | 10.25% |
-| `FC` | Cutter | 113,640 | 7.87% |
-| `ST` | Sweeper | 108,323 | 7.50% |
-| `CU` | Curveball | 92,771 | 6.42% |
-| `FS` | Splitter | 46,383 | 3.21% |
-| `KC` | Knuckle curve | 25,827 | 1.79% |
+| `FC` | Cutter | 112,722 | 7.80% |
+| `CU` | Curveball, including slow curve (`CS`) | 92,345 | 6.39% |
+| `FS` | Splitter, including forkball (`FO`) | 47,376 | 3.28% |
+| `KC` | Knuckle curve | 26,775 | 1.85% |
 | `SV` | Slurve | 7,360 | 0.51% |
-| `OTHER` | Pooled rare types (below) | 4,407 | 0.31% |
+| `OTHER` | Pooled rare types (below) | 2,891 | 0.20% |
 
 Counts are the 2024 and 2025 seasons combined, regular season plus postseason — 1,444,362 pitches, after the
-drops listed below.
+drops listed below. Statcast revises pitch labels after the fact, so per-class counts drift slightly between
+downloads.
 
-**What goes into `OTHER`.** Five codes, too infrequent to learn as separate classes:
+**Merged into a parent class.** Three codes are variants of a common pitch:
+
+| Code | Pitch | Merged into | Why |
+| --- | --- | --- | --- |
+| `ST` | Sweeper | `SL` | A slider variant whose label is only applied consistently from 2023. Statcast's backfill of 2016–2022 is partial: in those years roughly 8–13% of slider-family pitches have sweeper movement but are labelled `SL` (Chris Sale 2016–19, for one), against under 1% in 2025. Keeping both classes would train on one labelling scheme and evaluate on another. |
+| `FO` | Forkball | `FS` | An extreme splitter grip. A primary pitch for the few who throw it (Senga, Sasaki: ~30% of their pitches), so it does not belong with the genuinely rare types. |
+| `CS` | Slow curve | `CU` | A curveball thrown slower; ~1,100 pitches since 2016, too few to learn alone. |
+
+The cost of the `ST` merge: for pitchers who throw both a slider and a sweeper (about a fifth of slider-family
+pitches in 2024–25) the model cannot say which one is coming. Slurve (`SV`) was checked the same way and has no
+backfill gap, so it stays a class of its own.
+
+**What goes into `OTHER`.** Three codes, too infrequent to learn as separate classes:
 
 | Code | Pitch |
 | --- | --- |
 | `EP` | Eephus |
-| `FO` | Forkball |
-| `CS` | Slow curve |
 | `KN` | Knuckleball |
 | `SC` | Screwball |
 
@@ -41,6 +52,7 @@ drops listed below.
 - `IN` — intentional ball
 - `UN` — unknown / classifier failure
 - `FA` — generic fastball fallback
+- `AB` — automatic ball (one row, in 2016)
 
 **Drop rows where `pitch_type` is null.** 0.38% of rows; the same rows are also null in `plate_x`,
 `plate_z` and `release_speed`.
@@ -99,10 +111,9 @@ test alike, the mixture is consistent across splits and needs no indicator featu
 | Test | 2025 |
 
 
-**Why 2016.** Two things begin that season. Sweeper and slurve (`ST`, `SV`) exist as labels from 2016 and are
-absent in 2015 and earlier, so older seasons would have sweepers silently labelled as sliders. And
-`release_spin_rate`, `spin_axis`, `release_extension` and `effective_speed` go from 100% null in 2015 to ~1%
-null in 2016.
+**Why 2016.** `release_spin_rate`, `spin_axis`, `release_extension` and `effective_speed` go from 100% null in
+2015 to ~1% null in 2016. Sweeper and slurve labels also first appear in 2016, but the sweeper backfill is
+incomplete until 2023, which is why `ST` is merged into `SL` (Section 1).
 
 **Leakage rule.** A feature for a given pitch may use information from every pitch that happened strictly
 *before* it in real time, and nothing else. History crosses split boundaries — a 2025 pitch may legitimately
@@ -210,8 +221,8 @@ is still strictly in the past, so it is not a hard leak, but it mixes contexts �
 different context. Add these flags to 6a if adopted.
 
 **2. How does v1 evaluation handle the collapsed label space?**
-`evaluation.metrics` hardcodes all eleven `PITCH_CLASSES`, and `evaluate()` scores log loss, top-2 and
-macro-F1 over all eleven. With a single pitcher, ~6 classes never occur, so macro-averaged metrics are dragged
+`evaluation.metrics` hardcodes all ten `PITCH_CLASSES`, and `evaluate()` scores log loss, top-2 and
+macro-F1 over all ten. With a single pitcher, ~5 classes never occur, so macro-averaged metrics are dragged
 down by structurally impossible classes and `zero_support_classes` fires every run.
 *Recommendation:* for v1, fit the label set to the classes the pitcher actually throws (pass a pitcher-specific
 `classes` list into `evaluate`), and treat log loss + per-class F1 as the headline metrics; keep macro metrics

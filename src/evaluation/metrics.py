@@ -31,48 +31,7 @@ from sklearn.metrics import (
     top_k_accuracy_score,
 )
 
-PITCH_CLASSES: list[str] = [
-    "FF", "SI", "SL", "CH", "FC", "ST", "CU", "FS", "KC", "SV", "OTHER",
-]
-OTHER_CODES: frozenset[str] = frozenset({"EP", "FO", "CS", "KN", "SC"})
-DROP_CODES: frozenset[str] = frozenset({"PO", "IN", "UN", "FA"})
-ZONE_CLASSES: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
-KEEP_GAME_TYPES: frozenset[str] = frozenset({"R", "F", "D", "L", "W"})
-
-
-def map_pitch_classes(pitch_type: pd.Series) -> pd.Series:
-    """Map raw Statcast ``pitch_type`` codes onto :data:`PITCH_CLASSES`.
-
-    Rare codes collapse to ``OTHER``; non-pitch codes and nulls become NaN.
-    """
-    s = pitch_type.astype("object")
-    out = s.where(~s.isin(OTHER_CODES), "OTHER").where(~s.isin(DROP_CODES), np.nan)
-    unknown = set(out.dropna().unique()) - set(PITCH_CLASSES)
-    if unknown:
-        raise ValueError(
-            f"pitch_type codes not covered by the taxonomy: {sorted(unknown)}. "
-            "Add them to PITCH_CLASSES, OTHER_CODES or DROP_CODES."
-        )
-    return out
-
-
-def prepare(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply the design-doc row filters and attach target columns.
-
-    Drops spring training, null ``pitch_type`` and the non-pitch codes, then
-    adds ``pitch_class``. If a ``zone`` column is present, adds ``zone_class``
-    as a nullable integer; callers training the zone model should drop its
-    nulls themselves.
-
-    The 25-prior-pitch rule is not applied here: it needs pitch history, so it
-    belongs in the feature pipeline after the running averages are computed.
-    """
-    out = df[df["game_type"].isin(KEEP_GAME_TYPES)].copy()
-    out["pitch_class"] = map_pitch_classes(out["pitch_type"])
-    out = out.dropna(subset=["pitch_class"])
-    if "zone" in out.columns:
-        out["zone_class"] = out["zone"].astype("Int64")
-    return out
+from features.schema import PITCH_CLASSES
 
 
 def align_proba(
