@@ -208,8 +208,8 @@ team should keep in mind:
 
 ### Open decisions
 
-Captured but not yet settled. Each needs a call before the feature pipeline is final; a recommendation is
-noted for each.
+Each was settled when the transformer pipeline was built; the resolution is recorded under the original
+reasoning, which is left intact.
 
 **1. Does the 6b previous-pitch window reset at the at-bat / PA boundary?**
 The running averages (below) explicitly never reset. For the *immediate* previous-pitch features (6b), the
@@ -219,6 +219,9 @@ is still strictly in the past, so it is not a hard leak, but it mixes contexts �
 *Recommendation:* do **not** reset the window (keep history continuous), but add boolean flags
 `is_first_pitch_of_pa` and `is_first_pitch_of_ab` so the model can discount a "previous pitch" that came from a
 different context. Add these flags to 6a if adopted.
+**Resolved: adopted as recommended.** The window never resets, and both flags are now part of
+`schema.FIRST_PITCH_FLAGS` and therefore of `ENCODED_PRE_PITCH_COLUMNS`, so they reach both models as 6a
+inputs. `tests/test_sequence_features.py::test_first_pitch_flags_reach_the_model` guards this.
 
 **2. How does v1 evaluation handle the collapsed label space?**
 `evaluation.metrics` hardcodes all ten `PITCH_CLASSES`, and `evaluate()` scores log loss, top-2 and
@@ -228,6 +231,10 @@ down by structurally impossible classes and `zero_support_classes` fires every r
 `classes` list into `evaluate`), and treat log loss + per-class F1 as the headline metrics; keep macro metrics
 but read them knowing the denominator. Revisit when the model is multi-pitcher. Do not change the global
 `PITCH_CLASSES` taxonomy — scope the restriction to the v1 run.
+**Resolved: adopted as recommended.** The model keeps a ten-class head, so the taxonomy and the arrays stay
+multi-pitcher-ready. `src/model/train.py` scores only the classes present in the training split: it slices
+those columns out of the predicted probabilities, renormalises them, and passes that class list to
+`evaluate()`. The scoreboard row records the list under `classes`.
 
 **3. Does `batter` identity belong in a single-pitcher model?**
 Over one pitcher's rows, most batters appear only a handful of times. A full batter-id embedding table would
@@ -236,6 +243,33 @@ generalises.
 *Recommendation:* for v1, drop `batter` identity (keep `stand`), or map rare batters to a single `UNK` bucket
 (batters seen ≥ K times keep their id, else `UNK`). Keep `batter` in the schema so it returns naturally in the
 multi-pitcher model.
+**Resolved: the UNK-bucket option.** `sequence_features.MIN_BATTER_COUNT = 5`; rarer batters collapse to the
+UNK index. Known remaining flaw: rarity is counted over every split, not train only, so the vocabulary leaks
+a little. Deferred, because it moves a handful of batters between their own id and UNK and cannot leak a label.
+
+### Sequence-model encoding
+
+Decided while building the transformer inputs; `sequence_features.py`'s module docstring is the reference.
+
+- **Index convention.** Every categorical fed to an `nn.Embedding` is stored as `code + 2`, leaving index 0
+  for padding and 1 for missing / unknown (`schema.PAD_INDEX`, `UNK_INDEX`, `CODE_SHIFT`). `encode.py`'s
+  "none" code of −1 lands on UNK by construction. Before this, padding, missing and UNK were all −1, which
+  `nn.Embedding` rejects outright and which gave the model no way to tell an empty slot from a real one.
+- **Padding mask.** `build_sequences` returns a `(n, window)` boolean `pad_mask`, `True` meaning "ignore this
+  position" — PyTorch's `src_key_padding_mask` convention. Only the start of a pitcher's history is padded,
+  since the window never resets.
+- **Lagged features use the encoded forms.** `type_code`, the mirrored `zone_code`, the grouped `result_code`,
+  and `plate_x_rel` rather than the raw `pitch_class`, `zone`, `description` and `plate_x`. `encode.py`
+  already computed all four; the sequence builder simply was not using them.
+- **No NaNs reach the model.** The lagged continuous features get their own train-only scaler. Anything still
+  missing after scaling becomes 0, which is the train mean of a standardised column, and every nullable input
+  carries a companion `*_missing` flag so "average rest" and "unknown rest" stay distinguishable.
+- **`inning` is embedded, not scaled.** It is capped at 10 and fed as an embedding index, which satisfies
+  Section 6a's "bucket rather than feed raw" without inventing bucket edges. The two fielding alignments are
+  embedded for the same reason.
+- **Window length.** `WINDOW = 64` previous pitches by default, configurable with `--window`. 64 covers
+  roughly a start's worth of recent history while staying cheap on CPU; attention cost grows with the square
+  of the window. The gather is vectorised, so 400 is also practical.
 
 ## Additional notes
 
