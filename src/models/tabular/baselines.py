@@ -15,9 +15,9 @@ The pitcher mixes are the feature table's p_type_* / p_zone_* columns: built fro
 earlier pitches only and shrunk toward the league, so every pitch has one.
 
 Usage:
-    python src/models/baselines.py                # score on val
-    python src/models/baselines.py --split test   # once, at the end
-    python src/models/baselines.py --dry-run      # print, don't log
+    python src/models/tabular/baselines.py                # score on val
+    python src/models/tabular/baselines.py --split test   # once, at the end
+    python src/models/tabular/baselines.py --dry-run      # print, don't log
 """
 
 from __future__ import annotations
@@ -29,11 +29,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from evaluation import evaluate, log_run  # noqa: E402
-from features.schema import MIRROR_ZONE, PITCH_CLASSES, ZONE_CLASSES, ZONE_LABELS  # noqa: E402
-from features.tabular_features import OUT_PATH as FEATURES_PATH  # noqa: E402
+from features.schema import PITCH_CLASSES, ZONE_LABELS  # noqa: E402
+from models.tabular.train import TARGETS, labels, read_pitches, to_statcast_zones  # noqa: E402
 
 SCOREBOARD = Path("results/scoreboard.jsonl")
 
@@ -45,21 +45,13 @@ PITCHER_SLICES = {
     "pitcher_count": "count",
 }
 
-# target -> label column and its classes
-TARGETS = {
-    "pitch_type": ("pitch_class", PITCH_CLASSES),
-    "zone": ("zone_class", ZONE_CLASSES),
-}
-
 
 def run(split: str, dry_run: bool) -> None:
     """Score every baseline on ``split`` for both targets."""
     for target, (label, classes) in TARGETS.items():
         mix_cols = [c for s in PITCHER_SLICES.values() for c in mix_columns(target, s)]
-        rows = pd.read_parquet(FEATURES_PATH, columns=[label, "is_LHB", *mix_cols],
-                               filters=[("split", "==", split), ("eligible", "==", True)]).dropna(subset=[label])
-        train = pd.read_parquet(FEATURES_PATH, columns=[label],
-                                filters=[("split", "==", "train"), ("eligible", "==", True)]).dropna()
+        rows = pd.concat(read_pitches(split, [label, "is_LHB", *mix_cols]), ignore_index=True)
+        train = pd.concat(read_pitches("train", [label]), ignore_index=True)
         y = labels(rows[label])
         print(f"\n{target} on {split}: {len(rows):,} pitches")
 
@@ -86,10 +78,7 @@ def pitcher_mix(rows: pd.DataFrame, target: str, slice_name: str) -> np.ndarray:
     proba = rows[mix_columns(target, slice_name)].to_numpy(np.float64)
     proba = proba / proba.sum(axis=1, keepdims=True)  # stored as float32; sum to 1 at float64
     if target == "zone":
-        # The table's zones are the batter's view; mirror left-handed batters
-        # back so columns line up with zone_class (Statcast's zones).
-        lhb = rows["is_LHB"].to_numpy() == 1
-        proba[lhb] = proba[lhb][:, LHB_ZONE_ORDER]
+        proba = to_statcast_zones(proba, rows["is_LHB"].to_numpy() == 1)  # the table's zones are the batter's view
     return proba
 
 
@@ -98,15 +87,6 @@ def mix_columns(target: str, slice_name: str) -> list[str]:
     if target == "pitch_type":
         return [f"p_type_{slice_name}_{c}" for c in PITCH_CLASSES]
     return [f"p_zone_{slice_name}_{z}" for z in ZONE_LABELS]
-
-
-# For a left-handed batter, Statcast zone z is batter-view zone MIRROR_ZONE[z].
-LHB_ZONE_ORDER = np.array([ZONE_CLASSES.index(MIRROR_ZONE[z]) for z in ZONE_CLASSES])
-
-
-def labels(values: pd.Series) -> np.ndarray:
-    """Label column as plain values: pitch-class strings or zone ints."""
-    return values.to_numpy(dtype=object if isinstance(values.dtype, pd.CategoricalDtype) else int)
 
 
 def main() -> None:
