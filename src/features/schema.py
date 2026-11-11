@@ -147,8 +147,24 @@ TEXT_COLUMNS: list[str] = ["stand", "p_throws", "inning_topbot"]
 # The 0/1 columns encode.py makes from TEXT_COLUMNS.
 TEXT_FLAGS: list[str] = ["is_LHB", "is_LHP", "same_hand", "is_inning_top"]
 
+# Open Decision 1: the previous-pitch window never resets, so these flags let a
+# model discount a "previous pitch" that came from another at-bat or plate
+# appearance. Computed by encode.py, fed as 6a inputs.
+FIRST_PITCH_FLAGS: list[str] = ["is_first_pitch_of_ab", "is_first_pitch_of_pa"]
+
 # The pre-pitch columns as encode.py leaves them.
-ENCODED_PRE_PITCH_COLUMNS: list[str] = [c for c in PRE_PITCH_COLUMNS if c not in TEXT_COLUMNS] + TEXT_FLAGS
+ENCODED_PRE_PITCH_COLUMNS: list[str] = (
+    [c for c in PRE_PITCH_COLUMNS if c not in TEXT_COLUMNS] + TEXT_FLAGS + FIRST_PITCH_FLAGS
+)
 
 # Extra innings are capped at this value.
 INNING_CAP = 10
+
+# --- Sequence-model encoding --------------------------------------------------
+# Every categorical fed to an nn.Embedding is stored as ``code + CODE_SHIFT``,
+# so index 0 is free for padding and index 1 for missing / unknown. A code of
+# -1 (encode.py's "none") lands on UNK_INDEX by construction.
+
+PAD_INDEX = 0
+UNK_INDEX = 1
+CODE_SHIFT = 2
