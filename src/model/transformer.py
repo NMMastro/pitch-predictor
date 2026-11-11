@@ -1,8 +1,8 @@
 """The pitch-type transformer: previous pitches + current state -> 10 logits.
 
-WRITE THIS FILE. The three ``NotImplementedError`` stubs below are Tasks 5-7 of
-``docs/TRANSFORMER_SESSION.md``, which has progressive hints for each. Run
-``pytest tests/model/test_transformer.py`` as you go.
+This file implements Tasks 5-7 from ``docs/TRANSFORMER_SESSION.md``: embedding
+the pitch history, building the context token, and producing pitch logits with
+a transformer encoder.
 
 Shape of the thing, in words. A pitch is described two ways at once. Its
 *history* is the pitcher's previous ``window`` pitches, one token each, which is
@@ -93,25 +93,47 @@ class SequenceEmbedding(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        # TODO 1: self.categorical -- an nn.ModuleDict with one nn.Embedding per
-        #         column in SEQ_CATEGORICAL, each config.vocab_sizes[name] rows
-        #         by config.d_model wide, with padding_idx=0. The keys must be
-        #         the column names, because sum_embeddings looks them up by name.
-        # TODO 2: self.numeric -- an nn.Linear projecting config.n_seq_numeric
-        #         continuous features up to config.d_model.
-        # TODO 3: self.position -- an nn.Embedding holding one learned vector
-        #         per slot in the window: config.window rows by config.d_model.
-        raise NotImplementedError("Task 5: build the sequence embedding layers")
+        # Register one embedding table per categorical column. Each table has
+        # one row per code and produces a d_model-wide vector. The column names
+        # are the keys because sum_embeddings looks up each table by name.
+        self.categorical = nn.ModuleDict(
+            {
+                name: nn.Embedding(
+                    num_embeddings=config.vocab_sizes[name],  # One row per code.
+                    embedding_dim=config.d_model,  # Same vector width for every table.
+                    padding_idx=0,  # Padding codes return a zero vector.
+                )
+                for name in SEQ_CATEGORICAL
+            }
+        )
+
+        # Project the continuous pitch features to the same vector width.
+        self.numeric = nn.Linear(
+            in_features=config.n_seq_numeric,
+            out_features=config.d_model,
+        )
+
+        # Learn one d_model-wide vector for each position in the history window.
+        self.position = nn.Embedding(
+            num_embeddings=config.window,
+            embedding_dim=config.d_model,
+        )
 
     def forward(self, seq_cat: torch.Tensor, seq_num: torch.Tensor) -> torch.Tensor:
-        # TODO 4: embed the categorical codes with sum_embeddings(...).
-        # TODO 5: add the projected numeric features.
-        # TODO 6: add the position embedding. Positions are 0..W-1; build them
-        #         with torch.arange and keep them on seq_cat.device. Mind the
-        #         shapes: positions give (W, d_model) and the tokens are
-        #         (B, W, d_model), which broadcasts correctly as-is.
-        # TODO 7: return (B, W, d_model).
-        raise NotImplementedError("Task 5: combine codes, numbers and position")
+        # Look up and sum the categorical vectors for each pitch.
+        tokens = sum_embeddings(self.categorical, SEQ_CATEGORICAL, seq_cat)
+
+        # Transform the numeric features to d_model values and add them.
+        tokens = tokens + self.numeric(seq_num)
+
+        # Create slot indices from 0 to W-1 on the same device as the input.
+        positions = torch.arange(seq_cat.shape[1], device=seq_cat.device)
+
+        # Add each slot's learned vector to that slot in every batch row.
+        tokens = tokens + self.position(positions)
+
+        # Return one vector per pitch, with shape (B, W, d_model).
+        return tokens
 
 
 class ContextToken(nn.Module):
@@ -133,16 +155,31 @@ class ContextToken(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
-        # TODO 1: self.categorical -- as in SequenceEmbedding, but over
-        #         CTX_CATEGORICAL.
-        # TODO 2: self.numeric -- nn.Linear from config.n_ctx_numeric to
-        #         config.d_model.
-        raise NotImplementedError("Task 6: build the context layers")
+        # Build one embedding table for each categorical context feature.
+        self.categorical = nn.ModuleDict(
+            {
+                name: nn.Embedding(
+                    num_embeddings=config.vocab_sizes[name],  # One row per code.
+                    embedding_dim=config.d_model,  # Same vector width for every table.
+                    padding_idx=0,  # Padding codes return a zero vector.
+                )
+                for name in CTX_CATEGORICAL
+            }
+        )
+
+        # Project the numeric context features to d_model values.
+        self.numeric = nn.Linear(
+            in_features=config.n_ctx_numeric,
+            out_features=config.d_model,
+        )
 
     def forward(self, ctx_cat: torch.Tensor, ctx_num: torch.Tensor) -> torch.Tensor:
-        # TODO 3: sum the embedded codes and the projected numbers, then return
-        #         (B, 1, d_model).
-        raise NotImplementedError("Task 6: build the context token")
+        # Combine the categorical and numeric context into one vector.
+        tokens = sum_embeddings(self.categorical, CTX_CATEGORICAL, ctx_cat)
+        tokens = tokens + self.numeric(ctx_num)
+
+        # Add a token axis so the result has shape (B, 1, d_model).
+        return tokens.unsqueeze(1)
 
 
 class PitchTransformer(nn.Module):
@@ -157,31 +194,56 @@ class PitchTransformer(nn.Module):
         self.config = config
         self.sequence = SequenceEmbedding(config)
         self.context = ContextToken(config)
-        # TODO 1: self.encoder -- an nn.TransformerEncoder of config.n_layers
-        #         nn.TransformerEncoderLayer(s). The layer takes d_model,
-        #         nhead, dim_feedforward, dropout, and batch_first=True.
-        #         Two options worth setting: norm_first=True (pre-norm, which
-        #         trains more steadily at this depth) and, on the encoder,
-        #         enable_nested_tensor=False (its padding fast path is not
-        #         worth the warning at this size).
-        # TODO 2: self.head -- an nn.Linear from config.d_model to
-        #         config.n_classes. Logits, so no activation after it.
-        raise NotImplementedError("Task 7: build the encoder and the head")
+        # Define one layer that combines attention and a feedforward network.
+        layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_ff,
+            dropout=config.dropout,
+            batch_first=True,  # Inputs use (batch, position, features).
+            norm_first=True,  # Normalize before each attention/network block.
+        )
+
+        # Stack independently trained copies of the layer.
+        self.encoder = nn.TransformerEncoder(
+            layer,
+            num_layers=config.n_layers,
+            enable_nested_tensor=False,
+        )
+
+        # Convert the encoder's summary into one raw score per pitch class.
+        self.head = nn.Linear(
+            in_features=config.d_model,
+            out_features=config.n_classes,
+        )
 
     def forward(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
-        # TODO 3: build the token sequence: the context token, then the window.
-        #         torch.cat along dim=1 gives (B, 1 + W, d_model). Context
-        #         first, because the head reads position 0.
-        # TODO 4: extend the mask to match. batch["pad_mask"] is (B, W) and the
-        #         sequence is now 1 + W long. The context token is always real,
-        #         so prepend a column of False. Getting this wrong by one
-        #         column is the single most common bug here, and
-        #         test_transformer_ignores_whatever_is_in_the_padded_slots is
-        #         what catches it.
-        # TODO 5: run self.encoder(tokens, src_key_padding_mask=mask).
-        # TODO 6: take position 0 of the output and send it through self.head.
-        #         Return (B, n_classes).
-        raise NotImplementedError("Task 7: run the encoder over the tokens")
+        # Build the current situation's single token: (B, 1, d_model).
+        context = self.context(batch["ctx_cat"], batch["ctx_num"])
+
+        # Build one token per previous pitch: (B, W, d_model).
+        sequence = self.sequence(batch["seq_cat"], batch["seq_num"])
+
+        # Join along the token axis, with context first: (B, 1 + W, d_model).
+        tokens = torch.cat([context, sequence], dim=1)
+
+        # Read the history mask: True marks a padded pitch slot.
+        pad_mask = batch["pad_mask"]
+
+        # Create one False per example; the context token is always valid.
+        context_mask = pad_mask.new_zeros((pad_mask.shape[0], 1))
+
+        # Put context first so the mask matches the token sequence.
+        mask = torch.cat([context_mask, pad_mask], dim=1)
+
+        # Run attention while preventing it from reading padded pitch slots.
+        encoded = self.encoder(tokens, src_key_padding_mask=mask)
+
+        # Select the updated context token from every example: (B, d_model).
+        summary = encoded[:, 0]
+
+        # Convert each summary into pitch-class scores: (B, n_classes).
+        return self.head(summary)
 
 
 # --- given --------------------------------------------------------------------

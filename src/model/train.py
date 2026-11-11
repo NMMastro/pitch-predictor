@@ -82,19 +82,38 @@ def train_one_epoch(
         Mean loss per example over the epoch. Weight each batch by its size,
         because the last batch is usually smaller than the rest.
     """
-    # TODO 1: put the model in training mode, so dropout is active.
-    # TODO 2: loop over the loader. For each batch:
-    #           a. clear the gradients left over from the previous step
-    #           b. forward pass: logits = model(batch)
-    #           c. loss = criterion(logits, batch["y"])
-    #           d. backward pass
-    #           e. if config.grad_clip is not None, clip the gradient norm with
-    #              nn.utils.clip_grad_norm_
-    #           f. take an optimiser step
-    # TODO 3: accumulate loss.item() * len(batch["y"]) and the row count, then
-    #         return the weighted mean. Use .item(): keeping the tensor alive
-    #         keeps its whole computation graph alive with it.
-    raise NotImplementedError("Task 8: write the training step")
+    # Enable training behavior such as dropout.
+    model.train()
+
+    # Track loss and example counts across all batches in this epoch.
+    total_loss = 0.0
+    total_examples = 0
+
+    for batch in loader:
+        # Clear gradients from the previous batch.
+        optimizer.zero_grad()
+
+        # Predict pitch-class scores using the whole batch dictionary.
+        logits = model(batch)
+
+        # Compare predictions with the labels, then calculate gradients.
+        loss = criterion(logits, batch["y"])
+        loss.backward()
+
+        # Limit the gradient norm when clipping is enabled.
+        if config.grad_clip is not None:
+            nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+
+        # Update the model's weights using the gradients.
+        optimizer.step()
+
+        # Weight each batch's mean loss by its number of examples.
+        batch_size = len(batch["y"])
+        total_loss += loss.item() * batch_size
+        total_examples += batch_size
+
+    # Return the mean loss per example as a Python number.
+    return total_loss / total_examples
 
 
 @torch.no_grad()
@@ -113,15 +132,22 @@ def predict_proba(model: nn.Module, loader) -> np.ndarray:
         match the loader's, or the predictions will be scored against the wrong
         labels; the val and test loaders do not shuffle, for this reason.
     """
-    # The @torch.no_grad() decorator already covers the gradient half.
-    # TODO 1: put the model in eval mode.
-    # TODO 2: for each batch, run the model and softmax the logits over the
-    #         class dimension (dim=-1). Cast to float64 before the softmax --
-    #         in float32 the rows sum to 1 only to about 1e-7, and
-    #         evaluate() checks.
-    # TODO 3: concatenate the batches in order and return one NumPy array of
-    #         shape (n_rows, n_classes).
-    raise NotImplementedError("Task 9: write the prediction step")
+    # Disable training behavior such as dropout. The decorator above already
+    # prevents PyTorch from building gradient graphs during inference.
+    model.eval()
+
+    # Save each batch so their original loader order is preserved.
+    probability_batches = []
+
+    for batch in loader:
+        # Use float64 for precise probability sums, then normalize over classes.
+        logits = model(batch).double()
+        probabilities = torch.softmax(logits, dim=-1)
+        probability_batches.append(probabilities)
+
+    # Join the batches into (n_rows, n_classes) and return a NumPy array.
+    probabilities = torch.cat(probability_batches, dim=0)
+    return probabilities.numpy()
 
 
 # ==============================================================================
