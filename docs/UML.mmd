@@ -26,11 +26,18 @@ flowchart TB
         SEQ["sequence_features.py<br/><i>embedding ids, train-only scaler,<br/>X_seq + X_ctx (in memory)</i>"]
     end
 
+    subgraph MODELS["src/models/tabular/ — tabular models (EXISTS)"]
+        BL["baselines.py<br/><i>league mix + pitcher mixes<br/>(career, last200, vs_hand, count),<br/>no training</i>"]
+        TRN["train.py<br/><i>load, fit, score, log, save</i>"]
+        LR["logreg.py<br/><i>logistic regression</i>"]
+        XGB["xgb.py<br/><i>XGBoost</i>"]
+    end
+
     subgraph EVAL["src/evaluation/ — scoring (EXISTS)"]
         MET["metrics.py<br/><i>evaluate(), align_proba(),<br/>log_run(), load_scoreboard()</i>"]
     end
 
-    subgraph MODEL["src/model/ — the transformer (PLANNED)"]
+    subgraph MODEL["src/models/ (not tabular/) — the transformer (PLANNED)"]
         DS["dataset.py<br/><i>sequence batching, padding</i>"]
         NET["transformer.py<br/><i>embeddings + attention,<br/>10-class head</i>"]
         TR["train.py<br/><i>train loop, split, checkpoints</i>"]
@@ -39,6 +46,7 @@ flowchart TB
 
     subgraph RESULTS["📊 results/ (git-ignored)"]
         SB["scoreboard.jsonl<br/><i>per-run metrics</i>"]
+        MOD["models/<br/><i>fitted logreg / xgb</i>"]
         CK["checkpoints/<br/><i>trained weights</i>"]
     end
 
@@ -55,12 +63,21 @@ flowchart TB
 
     RAW --> CL --> CLEAN --> ENC
     ENC --> TAB --> FEAT
+    FEAT --> BL
+    FEAT --> TRN
+    LR -- "fit, predict_proba" --> TRN
+    XGB -- "fit, predict_proba" --> TRN
+    TRN -. "read_pitches, labels" .-> BL
+    BL -- "probabilities" --> MET
+    TRN -- "probabilities" --> MET
+    TRN --> MOD
     ENC --> SEQ
     SCH -. "classes, keys, columns" .-> CL
     SCH -.-> ENC
     SCH -.-> TAB
     SCH -.-> SEQ
     SCH -. "classes" .-> MET
+    SCH -.-> TRN
 
     SEQ -- "X_seq, X_ctx" --> DS --> TR
     NET --> TR
@@ -86,7 +103,7 @@ flowchart TB
     classDef data fill:#e7f1ff,stroke:#0d6efd,color:#111
     classDef contract fill:#f0e6ff,stroke:#8540f5,color:#111
 
-    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,MET,TST exists
+    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,BL,TRN,LR,XGB,MET,TST exists
     class DS,NET,TR,PR,DEMO,NB planned
-    class RAW,PIT,CLEAN,FEAT,SB,CK data
+    class RAW,PIT,CLEAN,FEAT,SB,MOD,CK data
     class DD contract
