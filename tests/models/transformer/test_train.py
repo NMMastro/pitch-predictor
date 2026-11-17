@@ -17,10 +17,10 @@ import torch
 from torch import nn
 
 from conftest import FAKE_N_CLASSES, FAKE_WINDOW as W
-from model.config import ModelConfig, TrainConfig
-from model.dataset import CTX_NUMERIC, SEQ_CATEGORICAL
-from model.train import predict_proba, train_one_epoch
-from model.transformer import PitchTransformer
+from models.transformer.config import ModelConfig, TrainConfig
+from models.transformer.dataset import CTX_NUMERIC, SEQ_CATEGORICAL
+from models.transformer.train import predict_proba, train_one_epoch
+from models.transformer.transformer import PitchTransformer
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ class OneBatchLoader:
         return self.repeats
 
 
-# --- Task 8: train_one_epoch --------------------------------------------------
+# --- train_one_epoch ----------------------------------------------------------
 
 def test_train_one_epoch_returns_a_plausible_mean_loss(model, fake_batch):
     loader = OneBatchLoader(fake_batch, repeats=3)
@@ -134,7 +134,7 @@ def test_the_model_can_overfit_one_batch(model, fake_batch):
     assert last < 0.1, f"could not memorise one batch; loss stalled at {last:.3f}"
 
 
-# --- Task 9: predict_proba ----------------------------------------------------
+# --- predict_proba ------------------------------------------------------------
 
 def test_predict_proba_returns_one_row_of_probabilities_per_example(model, fake_batch):
     proba = predict_proba(model, OneBatchLoader(fake_batch))

@@ -15,7 +15,7 @@ Two filters decide which rows are examples, both from DESIGN_DECISIONS.md:
              they just are not predicted.
 
 Usage:
-    from model.dataset import load_splits
+    from models.transformer.dataset import load_splits
 
     splits = load_splits(pitcher=SCHERZER, window=64)
     train_loader, val_loader, test_loader = make_loaders(splits, TrainConfig())
@@ -30,7 +30,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from features.schema import CLEAN_PATH, PITCH_CLASSES  # noqa: E402
 from features.sequence_features import (  # noqa: E402
@@ -94,11 +94,11 @@ class SplitData:
     vocab_sizes:
         Embedding rows per categorical column.
     window, n_seq_numeric, n_ctx_numeric, n_classes:
-        The shapes a :class:`~model.config.ModelConfig` needs.
+        The shapes a :class:`~models.transformer.config.ModelConfig` needs.
     train_classes:
         Indices into :data:`~features.schema.PITCH_CLASSES` that appear in the
-        training split -- the restricted label set for scoring (Open Decision
-        2). Sorted.
+        training split -- the restricted label set for scoring
+        (DESIGN_DECISIONS.md "v1 scope"). Sorted.
     class_counts:
         How often each of the ten classes appears in training, used for the
         frequency baseline.
@@ -168,7 +168,7 @@ def make_loaders(
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Train, val and test loaders. Only training is shuffled.
 
-    ``config`` is a :class:`~model.config.TrainConfig`.
+    ``config`` is a :class:`~models.transformer.config.TrainConfig`.
     """
     def loader(dataset: PitchDataset, shuffle: bool) -> DataLoader:
         return DataLoader(
@@ -190,7 +190,7 @@ def main() -> None:
     """Print one real batch's shapes -- the quickest check that the data is sane."""
     import argparse
 
-    from model.config import SCHERZER, TrainConfig
+    from models.transformer.config import SCHERZER, TrainConfig
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument("--clean", type=Path, default=CLEAN_PATH)

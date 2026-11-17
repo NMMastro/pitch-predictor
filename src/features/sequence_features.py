@@ -41,10 +41,10 @@ Slot W-1 of each window is the pitcher's immediately previous pitch and slot 0
 the oldest. Windows at the start of a pitcher's history are padded on the left.
 
 Every categorical is stored as ``code + CODE_SHIFT``, leaving 0 for padding and
-1 for missing / unknown; see ``schema.CODE_SHIFT``. ``vocab_sizes`` gives the
+1 for missing / unknown; see :data:`CODE_SHIFT`. ``vocab_sizes`` gives the
 number of embedding rows each one needs.
 
-Defaults for two open decisions (DESIGN_DECISIONS.md Section 6):
+Defaults (DESIGN_DECISIONS.md Section 6, "v1 scope" and "Sequence-model encoding"):
   WINDOW = 64            previous pitches in each sequence
   MIN_BATTER_COUNT = 5   batters seen fewer times become UNK
 
@@ -70,7 +70,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from features.encode import encode  # noqa: E402
 from features.schema import (  # noqa: E402
     CLEAN_PATH,
-    CODE_SHIFT,
     ENCODED_PRE_PITCH_COLUMNS,
     INNING_CAP,
     PITCH_CLASSES,
@@ -82,6 +81,15 @@ from features.schema import (  # noqa: E402
 # ==============================================================================
 # 1. MODEL INPUTS (DESIGN_DECISIONS.md Section 6)
 # ==============================================================================
+
+# --- Embedding index convention ---
+# Every categorical fed to an nn.Embedding is stored as ``code + CODE_SHIFT``,
+# so index 0 is free for padding and index 1 for missing / unknown. A code of
+# -1 (encode.py's "none") lands on UNK_INDEX by construction. Transformer-only:
+# the tabular pipeline keeps encode.py's plain codes.
+PAD_INDEX = 0
+UNK_INDEX = 1
+CODE_SHIFT = 2
 
 # --- 6b. Lagged previous-pitch features (describe PRIOR pitches only) ---
 # encode.py's codes, not the raw columns: zone_code is mirrored for left-handed
@@ -111,10 +119,19 @@ CONTINUOUS_INPUTS = [
 NULLABLE_INPUTS = ["pitcher_days_since_prev_game", "batter_days_since_prev_game"]
 MISSING_FLAGS = [f"{col}_missing" for col in NULLABLE_INPUTS]
 
+# The previous-pitch window never resets, so these flags let the model discount
+# a "previous pitch" that came from another at-bat or plate appearance. encode.py
+# computes them for every pitch; only the sequence model feeds them as inputs.
+FIRST_PITCH_FLAGS = ["is_first_pitch_of_ab", "is_first_pitch_of_pa"]
+
 # Everything else from 6a, in ctx_num order. The embedded columns drop out:
 # `inning` is replaced by `inning_code`, the alignments by their code columns.
 _CTX_EMBED_SOURCES = ["inning", "if_fielding_alignment", "of_fielding_alignment"]
-CTX_NUMERIC = [c for c in ENCODED_PRE_PITCH_COLUMNS if c not in _CTX_EMBED_SOURCES] + MISSING_FLAGS
+CTX_NUMERIC = (
+    [c for c in ENCODED_PRE_PITCH_COLUMNS if c not in _CTX_EMBED_SOURCES]
+    + FIRST_PITCH_FLAGS
+    + MISSING_FLAGS
+)
 
 # The label.
 LABEL = "type_code"
@@ -129,7 +146,7 @@ TAXONOMY_SIZES = {
     "inning_code": INNING_CAP,
 }
 
-# Open-decision defaults (DESIGN_DECISIONS.md Section 6 "Open decisions").
+# Defaults (DESIGN_DECISIONS.md Section 6, "v1 scope" and "Sequence-model encoding").
 WINDOW = 64           # previous-pitch window length for the 6b lags
 MIN_BATTER_COUNT = 5  # batters seen fewer times than this collapse to UNK
 UNK = -1              # encode.py's "none" code; CODE_SHIFT maps it to UNK_INDEX
@@ -170,7 +187,7 @@ def _category_codes(values: pd.Series) -> np.ndarray:
 
 
 def encode_ids(df: pd.DataFrame, min_batter_count: int = MIN_BATTER_COUNT) -> pd.DataFrame:
-    """Embedding ids -> contiguous codes with an UNK bucket (Open Decision #3).
+    """Embedding ids -> contiguous codes with an UNK bucket for rare batters.
 
     Stateless (no fitting). Rarity is judged on the frame passed in, which for a
     leakage-clean pipeline should be a vocabulary decided once and reused; for
@@ -284,7 +301,7 @@ def build_sequences(table: pd.DataFrame, window: int = WINDOW) -> dict[str, np.n
     # Indexing then overwriting beats np.where here: one (n, window, 3) array
     # instead of two, which matters at window 400.
     seq_cat = seq_cat_src[rows]
-    seq_cat[pad] = 0  # PAD_INDEX
+    seq_cat[pad] = PAD_INDEX
     seq_num = seq_num_src[rows]
     seq_num[pad] = 0.0
 
@@ -366,7 +383,7 @@ def build_dataset(
 ) -> dict:
     """Everything a model needs: the arrays, the table behind them, and metadata.
 
-    The one call ``src/model/dataset.py`` makes. Keys: the arrays from
+    The one call ``src/models/transformer/dataset.py`` makes. Keys: the arrays from
     :func:`build_sequences`, plus ``table``, ``scalers``, ``vocab_sizes`` and
     ``window``.
     """

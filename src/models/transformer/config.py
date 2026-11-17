@@ -40,14 +40,14 @@ class ModelConfig:
         Width of the feed-forward block inside each layer. Conventionally 2-4x
         ``d_model``.
     dropout:
-        Applied inside the encoder layers and to the pooled output.
+        Applied inside the encoder layers.
     window:
         Previous pitches per sequence. Must match the arrays the pipeline built,
         because the position embedding is sized from it.
     n_classes:
         Output classes: all ten of ``schema.PITCH_CLASSES``. The head stays
-        ten-wide even for one pitcher (Open Decision 2); the scoring step
-        restricts the label set instead.
+        ten-wide even for one pitcher (DESIGN_DECISIONS.md "v1 scope"); the
+        scoring step restricts the label set instead.
     n_seq_numeric, n_ctx_numeric:
         Continuous features per sequence step and on the current pitch. Filled
         in from the data.

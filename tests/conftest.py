@@ -142,7 +142,7 @@ def vocab_sizes() -> dict[str, int]:
 def fake_batch(vocab_sizes) -> dict:
     """One batch of random-but-valid tensors, with realistic left padding.
 
-    Keys and shapes match ``src/model/dataset.py``:
+    Keys and shapes match ``src/models/transformer/dataset.py``:
         seq_cat  (B, W, 3) int64     seq_num  (B, W, 3) float32
         pad_mask (B, W)    bool      ctx_cat  (B, 6)    int64
         ctx_num  (B, C)    float32   y        (B,)      int64
@@ -153,7 +153,7 @@ def fake_batch(vocab_sizes) -> dict:
     """
     import torch
 
-    from model.dataset import CTX_CATEGORICAL, CTX_NUMERIC, SEQ_CATEGORICAL
+    from models.transformer.dataset import CTX_CATEGORICAL, CTX_NUMERIC, SEQ_CATEGORICAL
 
     rng = np.random.default_rng(0)
     b, w = FAKE_BATCH_SIZE, FAKE_WINDOW

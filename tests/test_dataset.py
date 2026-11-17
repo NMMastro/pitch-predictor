@@ -14,8 +14,8 @@ import torch
 
 from conftest import SYNTHETIC_MIN_PRIOR, SYNTHETIC_PITCHERS
 from features.schema import PITCH_CLASSES
-from model.config import TrainConfig
-from model.dataset import (
+from models.transformer.config import TrainConfig
+from models.transformer.dataset import (
     BATCH_KEYS,
     SPLIT_NAMES,
     PitchDataset,
@@ -147,7 +147,7 @@ def test_metadata_matches_the_arrays(splits):
 
 
 def test_train_classes_are_the_ones_actually_thrown(splits):
-    """Open Decision 2: scoring is restricted to these, the head is not."""
+    """Scoring is restricted to these (v1 single-pitcher scope); the head is not."""
     y_train = splits.arrays["y"][splits.train.rows]
     assert splits.train_classes == sorted(set(y_train.tolist()))
     assert splits.class_counts.sum() == len(y_train)

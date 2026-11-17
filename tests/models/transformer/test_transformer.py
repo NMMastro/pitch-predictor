@@ -1,18 +1,17 @@
-"""Tests for the model you are writing. Work through them top to bottom.
+"""Tests for ``src/models/transformer/transformer.py``.
 
-These fail with NotImplementedError until the stubs in
-``src/model/transformer.py`` are filled in. Each test names the property it is
-checking; read the name before reading the assertion, because the name is the
-requirement and the assertion is only one way to check it.
+Each test names the property it is checking; read the name before reading the
+assertion, because the name is the requirement and the assertion is only one
+way to check it.
 
 Nothing here touches the parquet files -- the ``fake_batch`` fixture in
 ``tests/conftest.py`` makes tensors of the right shape, so the tests are fast
 and fail for model reasons only.
 
 Run one group at a time:
-    pytest tests/model/test_transformer.py -k sequence_embedding
-    pytest tests/model/test_transformer.py -k context_token
-    pytest tests/model/test_transformer.py -k transformer
+    pytest tests/models/transformer/test_transformer.py -k sequence_embedding
+    pytest tests/models/transformer/test_transformer.py -k context_token
+    pytest tests/models/transformer/test_transformer.py -k transformer
 """
 from __future__ import annotations
 
@@ -21,9 +20,9 @@ import torch
 
 from conftest import FAKE_BATCH_SIZE as B
 from conftest import FAKE_N_CLASSES, FAKE_WINDOW as W
-from model.config import ModelConfig
-from model.dataset import CTX_CATEGORICAL, CTX_NUMERIC, SEQ_CATEGORICAL
-from model.transformer import ContextToken, PitchTransformer, SequenceEmbedding
+from models.transformer.config import ModelConfig
+from models.transformer.dataset import CTX_CATEGORICAL, CTX_NUMERIC, SEQ_CATEGORICAL
+from models.transformer.transformer import ContextToken, PitchTransformer, SequenceEmbedding
 
 D_MODEL = 32
 
@@ -50,7 +49,7 @@ def model(config) -> PitchTransformer:
     return PitchTransformer(config)
 
 
-# --- Task 5: SequenceEmbedding ------------------------------------------------
+# --- SequenceEmbedding --------------------------------------------------------
 
 def test_sequence_embedding_maps_a_window_to_one_token_per_pitch(config, fake_batch):
     """Each of the W previous pitches becomes one d_model-wide vector."""
@@ -112,7 +111,7 @@ def test_sequence_embedding_pads_with_zeros_through_padding_idx(config):
         assert torch.equal(table.weight[0], torch.zeros(config.d_model)), name
 
 
-# --- Task 6: ContextToken -----------------------------------------------------
+# --- ContextToken -------------------------------------------------------------
 
 def test_context_token_is_a_single_token(config, fake_batch):
     """One token, so it can be concatenated onto the sequence: (B, 1, D)."""
@@ -145,7 +144,7 @@ def test_context_token_uses_the_numeric_features(config, fake_batch):
     assert not torch.allclose(out, base), "ctx_num is being ignored"
 
 
-# --- Task 7: PitchTransformer.forward ----------------------------------------
+# --- PitchTransformer.forward -------------------------------------------------
 
 def test_transformer_returns_one_logit_per_class(model, fake_batch):
     out = model(fake_batch)
@@ -260,6 +259,6 @@ def test_gradients_reach_every_parameter(model, fake_batch):
 
 def test_the_model_is_small_enough_for_one_pitcher(model):
     """~23k training pitches cannot support a large model."""
-    from model.transformer import count_parameters
+    from models.transformer.transformer import count_parameters
 
     assert count_parameters(model) < 2_000_000

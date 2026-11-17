@@ -11,14 +11,14 @@ Scherzer throws a fastball about half the time. A transformer that does not
 clearly beat that has learned nothing, and it is easy to build one that looks
 fine by accuracy alone while doing exactly as well as the baseline.
 
-Scoring follows DESIGN_DECISIONS.md Open Decision 2: the head stays ten-wide,
+Scoring follows DESIGN_DECISIONS.md "v1 scope": the head stays ten-wide,
 but metrics are computed over only the classes the pitcher actually throws, by
 slicing those columns out and renormalising.
 
 Usage:
-    python src/model/train.py                        # Scherzer, window 64
-    python src/model/train.py --epochs 20 --window 400
-    python src/model/train.py --pitcher 0            # every pitcher (slow)
+    python src/models/transformer/train.py                        # Scherzer, window 64
+    python src/models/transformer/train.py --epochs 20 --window 400
+    python src/models/transformer/train.py --pitcher 0            # every pitcher (slow)
 """
 
 from __future__ import annotations
@@ -34,20 +34,20 @@ import numpy as np
 import torch
 from torch import nn
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from evaluation import evaluate, log_run  # noqa: E402
 from features.schema import CLEAN_PATH, PITCH_CLASSES  # noqa: E402
-from model.config import SCHERZER, ModelConfig, TrainConfig  # noqa: E402
-from model.dataset import load_splits, make_loaders  # noqa: E402
-from model.transformer import build_model, count_parameters  # noqa: E402
+from models.transformer.config import SCHERZER, ModelConfig, TrainConfig  # noqa: E402
+from models.transformer.dataset import load_splits, make_loaders  # noqa: E402
+from models.transformer.transformer import build_model, count_parameters  # noqa: E402
 
 SCOREBOARD = Path("results/scoreboard.jsonl")
 CHECKPOINT_DIR = Path("results/checkpoints")
 
 
 # ==============================================================================
-# THE TWO PIECES YOU WRITE
+# TRAINING AND INFERENCE
 # ==============================================================================
 
 def train_one_epoch(
@@ -62,12 +62,12 @@ def train_one_epoch(
     The standard PyTorch training step, in order: zero the gradients, run the
     forward pass, compute the loss, backpropagate, optionally clip, then step.
     Getting the order wrong usually still runs -- it just does not learn, which
-    is why ``tests/model/test_train.py`` checks that the loss actually falls.
+    is why ``tests/models/transformer/test_train.py`` checks that the loss actually falls.
 
     Parameters
     ----------
     model:
-        The :class:`~model.transformer.PitchTransformer`. Its forward takes the
+        The :class:`~models.transformer.transformer.PitchTransformer`. Its forward takes the
         whole batch dict and returns ``(B, n_classes)`` logits.
     loader:
         Yields batch dicts with ``y`` holding the labels.
@@ -90,6 +90,8 @@ def train_one_epoch(
     total_examples = 0
 
     for batch in loader:
+        batch = to_device(batch, config.device)
+
         # Clear gradients from the previous batch.
         optimizer.zero_grad()
 
@@ -139,7 +141,11 @@ def predict_proba(model: nn.Module, loader) -> np.ndarray:
     # Save each batch so their original loader order is preserved.
     probability_batches = []
 
+    device = next(model.parameters()).device
+
     for batch in loader:
+        batch = to_device(batch, device)
+
         # Use float64 for precise probability sums, then normalize over classes.
         logits = model(batch).double()
         probabilities = torch.softmax(logits, dim=-1)
@@ -147,11 +153,16 @@ def predict_proba(model: nn.Module, loader) -> np.ndarray:
 
     # Join the batches into (n_rows, n_classes) and return a NumPy array.
     probabilities = torch.cat(probability_batches, dim=0)
-    return probabilities.numpy()
+    return probabilities.cpu().numpy()
+
+
+def to_device(batch: dict[str, torch.Tensor], device) -> dict[str, torch.Tensor]:
+    """Move every tensor in a batch dict to ``device`` (a no-op on CPU)."""
+    return {key: value.to(device) for key, value in batch.items()}
 
 
 # ==============================================================================
-# EVERYTHING ELSE IS WRITTEN
+# RUN: BASELINE, TRAINING LOOP, SCORING
 # ==============================================================================
 
 def set_seed(seed: int) -> None:
@@ -169,7 +180,7 @@ def labels_of(loader) -> np.ndarray:
 def restrict(proba: np.ndarray, classes: list[int]) -> np.ndarray:
     """Keep only ``classes``' columns and renormalise the rows.
 
-    Open Decision 2: the head predicts all ten classes, but a single pitcher
+    The head predicts all ten classes, but a single pitcher
     throws about five, so macro metrics over ten would be dragged down by
     classes that cannot occur. Whatever probability the model put on those is
     redistributed proportionally rather than dropped.
@@ -204,8 +215,8 @@ def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
     set_seed(train_config.seed)
     train_loader, val_loader, test_loader = make_loaders(splits, train_config)
 
-    # The baseline first: it needs no model, so it still prints while the
-    # model is a stub, and it is the number every epoch below is judged against.
+    # The baseline first: it needs no model, and it is the number every epoch
+    # below is judged against.
     y_val = labels_of(val_loader)
     classes = splits.train_classes
     base = score(y_val, baseline_proba(splits.class_counts, len(y_val)), classes)

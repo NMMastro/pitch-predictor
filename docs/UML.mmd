@@ -37,7 +37,7 @@ flowchart TB
         MET["metrics.py<br/><i>evaluate(), align_proba(),<br/>log_run(), load_scoreboard()</i>"]
     end
 
-    subgraph MODEL["src/model/ — the transformer"]
+    subgraph MODEL["src/models/transformer/ — the transformer"]
         CFG["config.py (EXISTS)<br/><i>ModelConfig, TrainConfig</i>"]
         DS["dataset.py (EXISTS)<br/><i>split + eligible filter,<br/>batching</i>"]
         NET["transformer.py (EXISTS)<br/><i>embeddings + attention,<br/>10-class head</i>"]
@@ -55,7 +55,7 @@ flowchart TB
         DEMO["demo / dashboard (PLANNED)<br/><i>uses SAME sequence_features + predict</i>"]
     end
 
-    TST["tests/ (EXISTS)<br/><i>test_metrics, test_sequence_features (no-leakage),<br/>test_dataset, model/</i>"]
+    TST["tests/ (EXISTS)<br/><i>test_metrics, test_sequence_features (no-leakage),<br/>test_dataset, models/transformer/</i>"]
 
     FS --> RAW
     FST --> RAW

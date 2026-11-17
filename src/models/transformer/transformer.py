@@ -1,8 +1,7 @@
 """The pitch-type transformer: previous pitches + current state -> 10 logits.
 
-This file implements Tasks 5-7 from ``docs/TRANSFORMER_SESSION.md``: embedding
-the pitch history, building the context token, and producing pitch logits with
-a transformer encoder.
+Embeds the pitch history, builds the context token, and produces pitch logits
+with a transformer encoder.
 
 Shape of the thing, in words. A pitch is described two ways at once. Its
 *history* is the pitcher's previous ``window`` pitches, one token each, which is
@@ -51,10 +50,10 @@ from pathlib import Path
 import torch
 from torch import nn
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from model.config import ModelConfig  # noqa: E402
-from model.dataset import CTX_CATEGORICAL, SEQ_CATEGORICAL  # noqa: E402
+from models.transformer.config import ModelConfig  # noqa: E402
+from models.transformer.dataset import CTX_CATEGORICAL, SEQ_CATEGORICAL  # noqa: E402
 
 
 def sum_embeddings(
@@ -62,13 +61,12 @@ def sum_embeddings(
 ) -> torch.Tensor:
     """Look each column's codes up in its own table and add the results.
 
-    Given to you -- it is index bookkeeping, not a design decision. ``codes`` is
-    ``(..., len(columns))`` and holds column i's codes at ``codes[..., i]``;
-    the result is ``(..., d_model)``.
+    ``codes`` is ``(..., len(columns))`` and holds column i's codes at
+    ``codes[..., i]``; the result is ``(..., d_model)``.
 
     Summing rather than concatenating keeps the width at ``d_model`` however
     many categoricals there are, and lets each one learn its own offset. It
-    works only because every table is ``d_model`` wide, so build them that way.
+    works only because every table is ``d_model`` wide.
     """
     return sum(tables[name](codes[..., i]) for i, name in enumerate(columns))
 
@@ -86,8 +84,8 @@ class SequenceEmbedding(nn.Module):
         seq_cat  (B, W, 3) int64    codes, 0 = padding
         seq_num  (B, W, 3) float32  standardised, 0 where padded
 
-    The config fields you need: ``vocab_sizes``, ``d_model``,
-    ``n_seq_numeric``, ``window``.
+    Config fields used: ``vocab_sizes``, ``d_model``, ``n_seq_numeric``,
+    ``window``.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -149,7 +147,7 @@ class ContextToken(nn.Module):
         ctx_num  (B, C) float32
 
     Note the ``1``: the result is one token, ready to be concatenated onto the
-    front of the sequence. ``unsqueeze`` is how you get it.
+    front of the sequence.
     """
 
     def __init__(self, config: ModelConfig) -> None:
@@ -246,7 +244,7 @@ class PitchTransformer(nn.Module):
         return self.head(summary)
 
 
-# --- given --------------------------------------------------------------------
+# --- construction helpers -----------------------------------------------------
 
 def build_model(splits, config: ModelConfig | None = None) -> PitchTransformer:
     """A model whose shapes match the data in ``splits``.

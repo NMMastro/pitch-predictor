@@ -16,8 +16,9 @@ import pandas as pd
 import pytest
 
 from conftest import SYNTHETIC_PITCHERS as PITCHERS
-from features.schema import CODE_SHIFT, SPLITS
+from features.schema import SPLITS
 from features.sequence_features import (
+    CODE_SHIFT,
     CTX_CATEGORICAL,
     CTX_NUMERIC,
     SEQ_CATEGORICAL,
@@ -166,7 +167,7 @@ def test_missing_values_are_flagged_not_silently_filled(data):
 
 
 def test_first_pitch_flags_reach_the_model(data):
-    """Open Decision 1: the window never resets, so the model needs the flags."""
+    """The window never resets, so the model needs the first-pitch flags."""
     for flag in ("is_first_pitch_of_ab", "is_first_pitch_of_pa"):
         assert flag in CTX_NUMERIC
         values = data["ctx_num"][:, CTX_NUMERIC.index(flag)]
