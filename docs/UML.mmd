@@ -3,7 +3,6 @@
 flowchart TB
     subgraph CONTRACT["📜 Source of truth"]
         DD["DESIGN_DECISIONS.md<br/><i>classes, split, leakage rule,<br/>Section 6 feature contract</i>"]
-        SG["TRANSFORMER_SESSION.md<br/><i>PyTorch primer + hints for the<br/>transformer.py / train.py stubs</i>"]
     end
 
     subgraph RETRIEVAL["src/data-retrieval/ — acquire & subset (EXISTS)"]
@@ -24,7 +23,14 @@ flowchart TB
         CL["clean.py<br/><i>filter rows, map classes,<br/>tag split + eligible</i>"]
         ENC["encode.py<br/><i>every pitch as numbers,<br/>shared by both models (in memory)</i>"]
         TAB["tabular_features.py<br/><i>pitcher / batter mixes, previous<br/>pitches, at-bat, workload</i>"]
-        SEQ["sequence_features.py<br/><i>shifted codes, pad mask, train-only<br/>scalers, seq + ctx arrays (in memory)</i>"]
+        SEQ["sequence_features.py<br/><i>shifted codes, pad mask, first-pitch flags,<br/>train-only scalers, seq + ctx arrays (in memory)</i>"]
+    end
+
+    subgraph MODELS["src/models/tabular/ — tabular models (EXISTS)"]
+        BL["baselines.py<br/><i>league mix + pitcher mixes<br/>(career, last200, vs_hand, count),<br/>no training</i>"]
+        TRN["train.py<br/><i>load, fit, score, log, save</i>"]
+        LR["logreg.py<br/><i>logistic regression</i>"]
+        XGB["xgb.py<br/><i>XGBoost</i>"]
     end
 
     subgraph EVAL["src/evaluation/ — scoring (EXISTS)"]
@@ -34,22 +40,22 @@ flowchart TB
     subgraph MODEL["src/model/ — the transformer"]
         CFG["config.py (EXISTS)<br/><i>ModelConfig, TrainConfig</i>"]
         DS["dataset.py (EXISTS)<br/><i>split + eligible filter,<br/>batching</i>"]
-        NET["transformer.py (STUBS)<br/><i>embeddings + attention,<br/>10-class head</i>"]
-        TR["train.py (STUBS)<br/><i>train loop, baseline,<br/>checkpoints</i>"]
+        NET["transformer.py (EXISTS)<br/><i>embeddings + attention,<br/>10-class head</i>"]
+        TR["train.py (EXISTS)<br/><i>train loop, baseline,<br/>checkpoints</i>"]
         PR["predict.py (PLANNED)<br/><i>load model → probabilities</i>"]
     end
 
     subgraph RESULTS["📊 results/ (git-ignored)"]
         SB["scoreboard.jsonl<br/><i>per-run metrics</i>"]
+        MOD["models/<br/><i>fitted logreg / xgb</i>"]
         CK["checkpoints/<br/><i>trained weights</i>"]
     end
 
     subgraph CONSUME["Consumers"]
-        NB["notebooks/*.ipynb (PLANNED)<br/><i>EDA, sanity checks,<br/>visualize — imports, never redefines</i>"]
         DEMO["demo / dashboard (PLANNED)<br/><i>uses SAME sequence_features + predict</i>"]
     end
 
-    TST["tests/ (EXISTS)<br/><i>test_metrics, test_sequence_features (no-leakage),<br/>test_dataset, model/ (fail until the stubs are written)</i>"]
+    TST["tests/ (EXISTS)<br/><i>test_metrics, test_sequence_features (no-leakage),<br/>test_dataset, model/</i>"]
 
     FS --> RAW
     FST --> RAW
@@ -57,12 +63,21 @@ flowchart TB
 
     RAW --> CL --> CLEAN --> ENC
     ENC --> TAB --> FEAT
+    FEAT --> BL
+    FEAT --> TRN
+    LR -- "fit, predict_proba" --> TRN
+    XGB -- "fit, predict_proba" --> TRN
+    TRN -. "read_pitches, labels" .-> BL
+    BL -- "probabilities" --> MET
+    TRN -- "probabilities" --> MET
+    TRN --> MOD
     ENC --> SEQ
     SCH -. "classes, keys, columns" .-> CL
     SCH -.-> ENC
     SCH -.-> TAB
     SCH -.-> SEQ
     SCH -. "classes" .-> MET
+    SCH -.-> TRN
 
     SEQ -- "seq_cat, seq_num, pad_mask,<br/>ctx_cat, ctx_num, y" --> DS --> TR
     NET --> TR
@@ -77,8 +92,6 @@ flowchart TB
     DD -. "defines rules for" .-> SCH
     DD -. "defines rules for" .-> MET
 
-    CLEAN --> NB
-    SCH -. "imports column lists" .-> NB
     SEQ --> DEMO
     PR --> DEMO
 
@@ -89,15 +102,12 @@ flowchart TB
     TST -.-> NET
     TST -.-> TR
 
-    SG -.-> NET
-    SG -.-> TR
-
     classDef exists fill:#d4edda,stroke:#28a745,color:#111
     classDef planned fill:#fff3cd,stroke:#ffc107,color:#111,stroke-dasharray: 5 3
     classDef data fill:#e7f1ff,stroke:#0d6efd,color:#111
     classDef contract fill:#f0e6ff,stroke:#8540f5,color:#111
 
-    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,MET,TST,CFG,DS exists
-    class NET,TR,PR,DEMO,NB planned
-    class RAW,PIT,CLEAN,FEAT,SB,CK data
-    class DD,SG contract
+    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,BL,TRN,LR,XGB,MET,TST,CFG,DS,NET,TR exists
+    class PR,DEMO planned
+    class RAW,PIT,CLEAN,FEAT,SB,MOD,CK data
+    class DD contract
