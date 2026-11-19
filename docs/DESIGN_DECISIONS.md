@@ -221,10 +221,10 @@ team should keep in mind:
   headline metrics. Revisit when the model is multi-pitcher.
 - **Rare batters share one `UNK` embedding.** Most batters face one pitcher only a handful of times, so a full
   batter-id table would mostly memorise noise. Batters seen fewer than `sequence_features.MIN_BATTER_COUNT = 5`
-  times collapse to the UNK index; the rest keep their own id. `batter` stays in the schema so full identity
-  returns naturally in the multi-pitcher model. Known flaw: rarity is counted over every split, not train only,
-  so the vocabulary leaks a little. This is deferred because it only moves a handful of batters between their
-  own id and UNK and cannot leak a label.
+  times in the train split collapse to the UNK index; the rest keep their own id. `batter` stays in the schema
+  so full identity returns naturally in the multi-pitcher model. Every id vocabulary (batter, pitcher, catcher)
+  is built from train rows only, so an id that first appears in val or test maps to UNK instead of an
+  untrained embedding row.
 
 ### Sequence-model encoding
 

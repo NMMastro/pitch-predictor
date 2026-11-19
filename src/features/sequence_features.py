@@ -187,11 +187,12 @@ def _category_codes(values: pd.Series) -> np.ndarray:
 
 
 def encode_ids(df: pd.DataFrame, min_batter_count: int = MIN_BATTER_COUNT) -> pd.DataFrame:
-    """Embedding ids -> contiguous codes with an UNK bucket for rare batters.
+    """Embedding ids -> contiguous codes with an UNK bucket for rare or unseen ids.
 
-    Stateless (no fitting). Rarity is judged on the frame passed in, which for a
-    leakage-clean pipeline should be a vocabulary decided once and reused; for
-    v1 single-pitcher data it is computed here. Codes start at 0; UNK is -1.
+    The vocabulary is built from train rows only: an id gets its own code if it
+    appears in train at least the minimum number of times. Ids that are rare in
+    train, or first appear in val/test, map to UNK, so the model never reads an
+    untrained embedding row. Codes start at 0; UNK is -1.
     """
     for col in INPUT_EMBED:
         df = _encode_id(df, col, min_batter_count if col == "batter" else 1)
@@ -199,8 +200,8 @@ def encode_ids(df: pd.DataFrame, min_batter_count: int = MIN_BATTER_COUNT) -> pd
 
 
 def _encode_id(df: pd.DataFrame, col: str, min_count: int) -> pd.DataFrame:
-    """Map an id column to contiguous int codes, rare ids -> UNK."""
-    counts = df[col].value_counts()
+    """Map an id column to contiguous int codes; ids rare or absent in train -> UNK."""
+    counts = df.loc[df["split"] == "train", col].value_counts()
     keep = set(counts[counts >= min_count].index)
     codes = {v: i for i, v in enumerate(sorted(keep))}
     df[col] = df[col].map(lambda v: codes.get(v, UNK)).astype("int64")
