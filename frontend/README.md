@@ -2,6 +2,8 @@
 
 Choose a pitcher and game, request a prediction, then reveal the recorded Statcast zone. The replay includes regular and postseason pitches with at least 250 prior pitches for that pitcher. The diagram uses the catcher’s view, with inside and away labeled relative to the batter.
 
+[How the frontend works](ARCHITECTURE.md) explains the replay flow, the file layout, and where the backend script fits.
+
 ## Run with the placeholder
 
 Run from the repository root. Use the absolute Parquet path when the data lives in a separate worktree.
