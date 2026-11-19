@@ -23,7 +23,7 @@ flowchart TB
         CL["clean.py<br/><i>filter rows, map classes,<br/>tag split + eligible</i>"]
         ENC["encode.py<br/><i>every pitch as numbers,<br/>shared by both models (in memory)</i>"]
         TAB["tabular_features.py<br/><i>pitcher / batter mixes, previous<br/>pitches, at-bat, workload</i>"]
-        SEQ["sequence_features.py<br/><i>embedding ids, train-only scaler,<br/>X_seq + X_ctx (in memory)</i>"]
+        SEQ["sequence_features.py<br/><i>shifted codes, pad mask, first-pitch flags,<br/>train-only scalers, seq + ctx arrays (in memory)</i>"]
     end
 
     subgraph MODELS["src/models/tabular/ — tabular models (EXISTS)"]
@@ -37,11 +37,12 @@ flowchart TB
         MET["metrics.py<br/><i>evaluate(), align_proba(),<br/>log_run(), load_scoreboard()</i>"]
     end
 
-    subgraph MODEL["src/models/ (not tabular/) — the transformer (PLANNED)"]
-        DS["dataset.py<br/><i>sequence batching, padding</i>"]
-        NET["transformer.py<br/><i>embeddings + attention,<br/>10-class head</i>"]
-        TR["train.py<br/><i>train loop, split, checkpoints</i>"]
-        PR["predict.py<br/><i>load model → probabilities</i>"]
+    subgraph MODEL["src/models/transformer/ — the transformer"]
+        CFG["config.py (EXISTS)<br/><i>ModelConfig, TrainConfig</i>"]
+        DS["dataset.py (EXISTS)<br/><i>split + eligible filter,<br/>batching</i>"]
+        NET["transformer.py (EXISTS)<br/><i>embeddings + attention,<br/>10-class head</i>"]
+        TR["train.py (EXISTS)<br/><i>train loop, baseline,<br/>checkpoints</i>"]
+        PR["predict.py (PLANNED)<br/><i>load model → probabilities</i>"]
     end
 
     subgraph RESULTS["📊 results/ (git-ignored)"]
@@ -51,11 +52,10 @@ flowchart TB
     end
 
     subgraph CONSUME["Consumers"]
-        NB["notebooks/*.ipynb (PLANNED)<br/><i>EDA, sanity checks,<br/>visualize — imports, never redefines</i>"]
         DEMO["demo / dashboard (PLANNED)<br/><i>uses SAME sequence_features + predict</i>"]
     end
 
-    TST["tests/ — test_metrics.py (EXISTS)<br/><i>+ planned: no-leakage tests for<br/>tabular / sequence features</i>"]
+    TST["tests/ (EXISTS)<br/><i>test_metrics, test_sequence_features (no-leakage),<br/>test_dataset, models/transformer/</i>"]
 
     FS --> RAW
     FST --> RAW
@@ -79,31 +79,35 @@ flowchart TB
     SCH -. "classes" .-> MET
     SCH -.-> TRN
 
-    SEQ -- "X_seq, X_ctx" --> DS --> TR
+    SEQ -- "seq_cat, seq_num, pad_mask,<br/>ctx_cat, ctx_num, y" --> DS --> TR
     NET --> TR
+    CFG -.-> NET
+    CFG -.-> TR
     TR --> CK
     TR --> PR
+    TR --> MET
     PR --> MET
     MET --> SB
 
     DD -. "defines rules for" .-> SCH
     DD -. "defines rules for" .-> MET
 
-    CLEAN --> NB
-    SCH -. "imports column lists" .-> NB
     SEQ --> DEMO
     PR --> DEMO
 
     TST -.-> MET
     TST -.-> TAB
     TST -.-> SEQ
+    TST -.-> DS
+    TST -.-> NET
+    TST -.-> TR
 
     classDef exists fill:#d4edda,stroke:#28a745,color:#111
     classDef planned fill:#fff3cd,stroke:#ffc107,color:#111,stroke-dasharray: 5 3
     classDef data fill:#e7f1ff,stroke:#0d6efd,color:#111
     classDef contract fill:#f0e6ff,stroke:#8540f5,color:#111
 
-    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,BL,TRN,LR,XGB,MET,TST exists
-    class DS,NET,TR,PR,DEMO,NB planned
+    class FS,FST,EP,SCH,CL,ENC,TAB,SEQ,BL,TRN,LR,XGB,MET,TST,CFG,DS,NET,TR exists
+    class PR,DEMO planned
     class RAW,PIT,CLEAN,FEAT,SB,MOD,CK data
     class DD contract
