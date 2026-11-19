@@ -16,18 +16,23 @@ for zone in range(1, 10):
     ZONE_PATHS[zone] = f"M{x} {y}h60v60h-60Z"
 
 
-def chart_description(stand: str, predicted: int | None, actual: int | None) -> str:
+def chart_description(
+    stand: str, predicted: int | None, actual: int | None, *, placeholder: bool = False,
+) -> str:
     side = {"L": "right", "R": "left"}.get(stand)
     title = "Strike zone from the catcher’s view."
     if side:
         title += f" Batter on the {side}."
-    for purpose, zone in (("Predicted", predicted), ("Actual", actual)):
+    prediction_label = "Placeholder" if placeholder else "Predicted"
+    for purpose, zone in ((prediction_label, predicted), ("Actual", actual)):
         if zone is not None:
             title += f" {purpose} {zone_label(zone_for_catcher(zone, stand)).lower()}."
     return title
 
 
-def strike_zone(stand: str, predicted: int | None, actual: int | None) -> str:
+def strike_zone(
+    stand: str, predicted: int | None, actual: int | None, *, placeholder: bool = False,
+) -> str:
     batter_x = 40 if stand == "R" else 392
     regions = "".join(
         f'<path d="{path}" fill="{("#ffffff" if zone < 10 else "#e8eff3")}"/>'
@@ -45,7 +50,7 @@ def strike_zone(stand: str, predicted: int | None, actual: int | None) -> str:
             f'<path class="zone-actual" d="{ZONE_PATHS[actual]}" '
             'fill="none" stroke="#a44219" stroke-width="3.5"/>'
         )
-    title = escape(chart_description(stand, predicted, actual))
+    title = escape(chart_description(stand, predicted, actual, placeholder=placeholder))
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 304"
       role="img" aria-labelledby="zone-title" stroke-linejoin="round">
       <title id="zone-title">{title}</title>

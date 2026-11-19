@@ -1,55 +1,44 @@
 # 2025 pitch replay
 
-Choose a pitcher and game, run the zone transformer, then reveal the recorded zone. The diagram shows all 13 Statcast regions from the catcher’s view. Inside and away are relative to the batter. The replay includes regular season and postseason pitches with at least 250 prior pitches for that pitcher.
+Choose a pitcher and game, request a prediction, then reveal the recorded Statcast zone. The replay includes regular and postseason pitches with at least 250 prior pitches for that pitcher. The diagram uses the catcher’s view, with inside and away labeled relative to the batter.
 
-## Run the app
+## Run with the placeholder
 
-Run these commands from the repository root. Create a dedicated environment if another environment is in use for training.
+Run from the repository root. Use the absolute Parquet path when the data lives in a separate worktree.
 
 ```bash
 python -m venv frontend/.venv
 source frontend/.venv/bin/activate
-python -m pip install -r requirements.txt -r frontend/requirements.txt
+python -m pip install -r frontend/requirements.txt
 
-# Use an absolute path when running in a separate Git worktree.
 PITCH_DATA=/absolute/path/to/data/clean/pitches.parquet
 PYTHONPATH=src python -m frontend.prepare_names --clean "$PITCH_DATA"
 PYTHONPATH=src python -m streamlit run frontend/app.py --theme.base light -- --clean "$PITCH_DATA"
 ```
 
-The name setup downloads a player lookup table once. The app uses the resulting local cache. If the cache is missing a player, the app shows the player’s MLB ID. Use `--names` after the Streamlit argument separator to select a different cache.
+The name setup caches player names for offline use. The app uses the MLB player ID as a fallback. Use `--names` after the Streamlit argument separator to select a different cache.
 
-## Train a zone checkpoint
+The default predictor is a labeled placeholder. It returns a sample zone based on the selected pitch key.
 
-The app looks for `frontend/artifacts/zone.pt`. To make one, use a machine with the prepared PyTorch environment and the clean 2016–2025 Parquet. If bringing over a checkpoint from another machine, pass the file with `--checkpoint` after the Streamlit argument separator.
+## Connect the team’s backend
 
-```bash
-PYTHONPATH=src python -m frontend.train_zone --clean "$PITCH_DATA" --device cuda
-```
-
-Use `--device cpu` to train on a CPU. For a quick end-to-end check with a small CPU model, use the Scherzer smoke run below. When launching the app, pass `--checkpoint frontend/artifacts/scherzer-smoke.pt`. The smoke checkpoint shows only Scherzer’s games.
+Give the backend agent [this prompt](BACKEND_AGENT_PROMPT.md) to build the inference script. Once the script is ready, pass its path and the checkpoints you want to use.
 
 ```bash
-PYTHONPATH=src python -m frontend.train_zone --clean "$PITCH_DATA" \
-  --pitcher 453286 --epochs 1 --window 16 --d-model 32 --layers 1 \
-  --output frontend/artifacts/scherzer-smoke.pt
+PYTHONPATH=src python -m streamlit run frontend/app.py --theme.base light -- \
+  --clean "$PITCH_DATA" \
+  --predict-script /absolute/path/to/backend/src/models/transformer/predict.py \
+  --backend-dir /absolute/path/to/backend \
+  --backend-python /absolute/path/to/backend/.venv/bin/python \
+  --checkpoint /absolute/path/to/run-a.pt \
+  --checkpoint /absolute/path/to/run-b.pt
 ```
 
-The trainer shares the model architecture and Statcast encoding with the backend. It learns the 13 pitch zones from 2016–2023, saves the checkpoint with the lowest 2024 validation log loss, and prints log loss and accuracy on the 2025 holdout. Each model input uses strictly earlier pitch outcomes and the current pre-pitch context. `zone_data.py` prepares the same features for both training and replay. `replay.py` handles data loading and single-pitch inference. `app.py` handles the page, controls, and selection state.
-
-## Local demo checkpoint
-
-The initial league-wide demo checkpoint used one CPU epoch, a 16-pitch window, one encoder layer, and a model width of 32. On 718,873 labeled 2025 test pitches it scored 2.3766 log loss, 22.08% accuracy, and 34.94% top-2 accuracy. The UI applies its 250-prior-pitch demo cutoff separately.
-
-```bash
-PYTHONPATH=src python -m frontend.train_zone --clean "$PITCH_DATA" \
-  --epochs 1 --window 16 --d-model 32 --layers 1 --batch-size 256
-```
-
-The checkpoint and batter name cache are local artifacts. Generate them on another checkout or copy them into `frontend/artifacts/`.
+Repeat `--checkpoint` to get a model picker. The app passes the selected path and the exact pitch key to the backend on each click. The backend owns checkpoint loading, feature preparation, and inference. The frontend reads the prediction JSON and the recorded Statcast result. With a pitch-type checkpoint, the app displays the type alongside the recorded zone when revealed. A location overlay requires a zone in the backend response.
 
 ## Tests
 
 ```bash
-PYTHONPATH=src python -m pytest -q tests frontend/tests
+python -m pip install pytest
+PYTHONPATH=src python -m pytest -q frontend/tests
 ```

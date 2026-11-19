@@ -1,105 +1,73 @@
-from copy import deepcopy
+import sys
+from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
-import torch
 
-from features.schema import PITCH_CLASSES, ZONE_CLASSES
-from models.transformer.config import ModelConfig
-from models.transformer.transformer import PitchTransformer
+from features.schema import ZONE_CLASSES
 
-from frontend.replay import PitcherReplay, ZoneModel, zone_for_catcher, zone_label
+from frontend.prediction import PredictionError, Predictor, parse_prediction
+from frontend.replay import zone_for_catcher, zone_label
 from frontend.strike_zone import ZONE_PATHS, strike_zone
-from frontend.train_zone import predict_probabilities
-from frontend.zone_data import (
-    FEATURE_COLUMNS,
-    FEATURE_ORDER,
-    encode_pitches,
-    fit_preprocessing,
-    make_loader,
-    prepare_rows,
-    split_rows,
-    vocabulary_sizes,
-)
 
 
-@pytest.fixture
-def pitches():
-    rows = []
-    for pitcher in (1, 2):
-        for index, split in enumerate(("train", "train", "val", "test", "test")):
-            rows.append({
-                **dict.fromkeys(FEATURE_COLUMNS, 0),
-                "rid": len(rows),
-                "pitcher": pitcher,
-                "batter": pitcher if split == "train" else 99,
-                "eligible": index > 0,
-                "split": split,
-                "game_pk": index,
-                "at_bat_number": 1,
-                "pitch_number": 1,
-                "stand": "L" if index == 3 else "R",
-                "inning": 1,
-                "inning_topbot": "Top",
-                "p_throws": "R",
-                "pitch_class": "FF",
-                "zone_class": (None if index == 3 and pitcher == 2 else 14),
-                "description": "ball",
-                "release_speed": 90 + index,
-                "plate_x": 1.0,
-                "plate_z": 1.5,
-                "if_fielding_alignment": "Standard",
-                "of_fielding_alignment": "Standard",
-            })
-    table = pd.DataFrame(rows)
-    table["pitch_class"] = pd.Categorical(table["pitch_class"], categories=PITCH_CLASSES)
-    return table
-
-
-def test_training_and_replay_share_the_exact_pitch_inputs(pitches):
-    table = encode_pitches(pitches)
-    preprocessing = fit_preprocessing(table)
-    features = prepare_rows(table, preprocessing)
-    config = ModelConfig(
-        n_classes=len(ZONE_CLASSES),
-        vocab_sizes=vocabulary_sizes(preprocessing),
-        n_ctx_numeric=len(FEATURE_ORDER["ctx_num"]),
-        window=4,
+def test_predictor_passes_exact_pitch_and_checkpoint_to_backend(tmp_path):
+    checkpoint = tmp_path / "run with spaces.pt"
+    script = tmp_path / "backend prediction.py"
+    flags = {
+        "--clean": "pitches.parquet",
+        "--checkpoint": str(checkpoint),
+        "--pitcher": "453286",
+        "--game-pk": "778536",
+        "--at-bat-number": "1",
+        "--pitch-number": "2",
+    }
+    script.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "assert Path.cwd().name == 'backend repo'\n"
+        f"assert dict(zip(sys.argv[1::2], sys.argv[2::2])) == {flags!r}\n"
+        "print(json.dumps({'zone': 14, 'zone_probability': 0.42}))\n"
     )
-    model = PitchTransformer(config)
-    trained = ZoneModel(model, preprocessing, None)
-    expected = predict_probabilities(model, make_loader(features, split_rows(table)["test"], 4, 2))
+    backend = tmp_path / "backend repo"
+    backend.mkdir()
 
-    selected = prepare_rows(table.loc[table["pitcher"] == 2], preprocessing)
-    replay_probability = predict_probabilities(model, [selected.batch(np.array([4]), 4)])[0]
-    np.testing.assert_allclose(replay_probability, expected[-1], rtol=1e-5, atol=1e-6)
-    replay = PitcherReplay(pd.DataFrame(), selected, {(4, 1, 1): 4})
-    zone, probability = replay.predict_zone(trained, (4, 1, 1))
-    assert zone == ZONE_CLASSES[expected[-1].argmax()]
-    assert probability == pytest.approx(expected[-1].max(), abs=1e-6)
-    assert selected.labels[3] < 0  # missing outcomes stay in the history
-    assert selected.batch(np.array([4]), 4)["pad_mask"].sum() == 0
-    assert features.batch(np.array([5]), 4)["pad_mask"].all()  # new pitcher starts empty
+    result = Predictor(script, sys.executable, backend).predict(
+        clean=Path("pitches.parquet"),
+        checkpoint=checkpoint,
+        pitcher=453286,
+        pitch_key=(778536, 1, 2),
+    )
+
+    assert result.zone == 14
+    assert result.zone_probability == 0.42
 
 
-def test_current_outcome_and_measured_bounds_do_not_reach_model(pitches):
-    baseline = encode_pitches(pitches)
-    preprocessing = fit_preprocessing(baseline)
+def test_placeholder_exercises_the_same_cli_without_weights():
+    placeholder = Path(__file__).resolve().parents[1] / "placeholder_predict.py"
+    result = Predictor(placeholder, sys.executable).predict(
+        clean=Path("pitches.parquet"),
+        checkpoint=None,
+        pitcher=453286,
+        pitch_key=(778536, 1, 1),
+    )
+    assert result.zone in ZONE_CLASSES
+    assert result.zone_probability is None
 
-    changed = deepcopy(pitches)
-    changed.loc[3, ["zone_class", "description", "plate_x", "plate_z", "release_speed"]] = [
-        5, "called_strike", 0.0, 2.5, 105,
-    ]
-    changed["sz_top"] = 6.0
-    changed["sz_bot"] = 3.0
 
-    original = prepare_rows(baseline, preprocessing).batch(np.array([3, 4]), 3)
-    updated = prepare_rows(encode_pitches(changed), preprocessing).batch(np.array([3, 4]), 3)
-    assert original["y"][0] != updated["y"][0]
-    for key in ("seq_num", "seq_cat", "ctx_num", "ctx_cat", "pad_mask"):
-        torch.testing.assert_close(original[key][0], updated[key][0])
-    assert not torch.equal(original["seq_cat"][1], updated["seq_cat"][1])
+@pytest.mark.parametrize("stdout", [
+    "debug log\n{\"zone\": 1}", "[]", "{}", '{"zone": 10}',
+    '{"zone": true}', '{"zone": 1, "zone_probability": 1.1}', '{"pitch_type": ""}',
+])
+def test_rejects_invalid_prediction_without_showing_a_zone(stdout):
+    with pytest.raises(PredictionError):
+        parse_prediction(stdout)
+
+
+def test_pitch_type_response_does_not_create_a_zone():
+    result = parse_prediction('{"pitch_type": "FF", "pitch_type_probability": 0.54}')
+    assert result.pitch_type == "FF"
+    assert result.pitch_type_probability == 0.54
+    assert result.zone is None
 
 
 def test_catcher_view_maps_every_region_and_keeps_matching_overlays():

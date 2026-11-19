@@ -1,1 +1,4 @@
+pandas>=2.0
+pyarrow>=14.0
+pybaseball>=2.2.7
 streamlit>=1.67,<2

@@ -1,8 +1,7 @@
 """The Streamlit pitch replay. Run from the repository root."""
 
 import argparse
-import pickle
-import shlex
+import sys
 from collections import Counter
 from html import escape
 from pathlib import Path
@@ -11,12 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from features.schema import CLEAN_PATH, PITCH_KEY, ZONE_CLASSES
-from models.transformer.config import SCHERZER
 
+from frontend.prediction import PredictionError, Predictor
 from frontend.replay import (
+    DEFAULT_PITCHER,
     NAME_CACHE,
     REPLAY_YEAR,
-    ZoneModel,
     load_pitcher,
     pitcher_name,
     read_catalog,
@@ -25,12 +24,6 @@ from frontend.replay import (
     zone_label,
 )
 from frontend.strike_zone import chart_description, strike_zone
-from frontend.train_zone import CHECKPOINT
-
-
-@st.cache_resource(max_entries=2)
-def cached_model(path: Path, modified_ns: int) -> ZoneModel:
-    return ZoneModel.load(path)
 
 
 @st.cache_data(max_entries=2)
@@ -38,10 +31,9 @@ def cached_catalog(path: Path, modified_ns: int):
     return read_catalog(path)
 
 
-@st.cache_resource(max_entries=4)
-def cached_pitcher(clean: Path, clean_version: int, pitcher: int, checkpoint: Path, model_version: int):
-    model = cached_model(checkpoint, model_version)
-    return load_pitcher(clean, pitcher, model.preprocessing)
+@st.cache_data(max_entries=4)
+def cached_pitcher(clean: Path, clean_version: int, pitcher: int):
+    return load_pitcher(clean, pitcher)
 
 
 @st.cache_data(max_entries=2)
@@ -51,6 +43,7 @@ def cached_names(path: Path, modified_ns: int):
 
 def reset_result():
     st.session_state.prediction = None
+    st.session_state.prediction_error = None
     st.session_state.revealed = False
 
 
@@ -59,8 +52,15 @@ def move_pitch(change: int):
     reset_result()
 
 
-def run_prediction(replay, model, pitch_key):
-    st.session_state.prediction = replay.predict_zone(model, pitch_key)
+def run_prediction(predictor, clean, checkpoint, pitcher, pitch_key):
+    st.session_state.prediction_error = None
+    try:
+        with st.spinner("Waiting for the prediction…"):
+            st.session_state.prediction = predictor.predict(
+                clean=clean, checkpoint=checkpoint, pitcher=pitcher, pitch_key=pitch_key,
+            )
+    except PredictionError as error:
+        st.session_state.prediction_error = str(error)
 
 
 def reveal_zone():
@@ -90,11 +90,23 @@ def matchup(pitch, names):
     """
 
 
-def compare_zones(prediction, revealed, actual, stand):
-    predicted_zone, probability = prediction if prediction else (None, None)
-    predicted_summary = (
-        f"{zone_label(predicted_zone)} · {probability:.0%}" if prediction else "Awaiting prediction"
-    )
+def format_prediction(label, probability):
+    return f"{label} · {probability:.0%}" if probability is not None else label
+
+
+def compare_zones(prediction, revealed, actual, stand, placeholder):
+    predicted_heading = "Placeholder zone" if placeholder else "Predicted zone"
+    predicted_summary = "Awaiting prediction"
+    predicted_type = ""
+    if prediction and prediction.zone is not None:
+        relative = zone_for_catcher(prediction.zone, stand)
+        predicted_summary = format_prediction(zone_label(relative), prediction.zone_probability)
+    if prediction and prediction.pitch_type:
+        pitch_type = escape(format_prediction(prediction.pitch_type, prediction.pitch_type_probability))
+        if prediction.zone is None:
+            predicted_heading, predicted_summary = "Predicted pitch type", pitch_type
+        else:
+            predicted_type = f"<p>Pitch type {pitch_type}</p>"
     actual_summary = "Hidden"
     if revealed:
         actual_summary = (
@@ -103,7 +115,7 @@ def compare_zones(prediction, revealed, actual, stand):
     return f"""
     <div class="zone-legend" role="status" aria-live="polite">
       <div><span class="legend-mark predicted-mark"></span><div>
-        <strong>Predicted zone</strong><p>{predicted_summary}</p>
+        <strong>{predicted_heading}</strong><p>{predicted_summary}</p>{predicted_type}
       </div></div>
       <div><span class="legend-mark actual-mark"></span><div>
         <strong>Actual zone</strong><p>{actual_summary}</p>
@@ -115,7 +127,10 @@ def compare_zones(prediction, revealed, actual, stand):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--clean", type=Path, default=CLEAN_PATH)
-    parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT)
+    parser.add_argument("--checkpoint", type=Path, action="append", default=[])
+    parser.add_argument("--predict-script", type=Path)
+    parser.add_argument("--backend-python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--backend-dir", type=Path)
     parser.add_argument("--names", type=Path, default=NAME_CACHE)
     args = parser.parse_args()
 
@@ -123,28 +138,40 @@ def main():
     st.html(Path(__file__).with_name("style.css"))
     st.title("2025 pitch replay")
     clean = args.clean.resolve()
-    checkpoint = args.checkpoint.resolve()
     if not clean.is_file():
         st.error(f"Clean Statcast data is missing at {clean}. Pass its path with `--clean`.")
         st.stop()
-    try:
-        model_version = checkpoint.stat().st_mtime_ns
-        model = cached_model(checkpoint, model_version)
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError, EOFError, pickle.UnpicklingError):
-        save_at = shlex.quote(str(checkpoint))
-        data_at = shlex.quote(str(clean))
-        st.error("Load a trained zone checkpoint to start the replay.")
-        st.code(
-            f"PYTHONPATH=src python -m frontend.train_zone --clean {data_at} --output {save_at}",
-            language="bash",
-        )
-        st.stop()
+
+    placeholder_script = Path(__file__).resolve().with_name("placeholder_predict.py")
+    script = args.predict_script.expanduser().resolve() if args.predict_script else placeholder_script
+    placeholder = script == placeholder_script
+    predictor = Predictor(
+        script=script,
+        python=str(args.backend_python.expanduser().absolute()),
+        directory=args.backend_dir.expanduser().resolve() if args.backend_dir else None,
+    )
+    checkpoints = list(dict.fromkeys(path.expanduser().resolve() for path in args.checkpoint))
+    checkpoint = checkpoints[0] if checkpoints else None
+    predictor_issue = None
+    if placeholder:
+        st.caption("Placeholder mode · Sample zones for UI testing")
+    else:
+        if len(checkpoints) > 1:
+            checkpoint = st.selectbox("Checkpoint", checkpoints, format_func=str)
+        elif checkpoint is not None:
+            st.caption(f"Checkpoint · {checkpoint.parent.name}/{checkpoint.name}")
+
+        if not script.is_file():
+            predictor_issue = f"Backend script is missing at {script}."
+        elif checkpoint is None:
+            predictor_issue = "Add a backend checkpoint with `--checkpoint`."
+        elif not checkpoint.is_file():
+            predictor_issue = f"Checkpoint is missing at {checkpoint}."
+    if predictor_issue:
+        st.warning(predictor_issue)
 
     clean_version = clean.stat().st_mtime_ns
     games = cached_catalog(clean, clean_version)
-    if model.training_pitcher is not None:
-        games = games.loc[games["pitcher"] == model.training_pitcher]
-        st.caption("Smoke checkpoint · One pitcher")
     if games.empty:
         st.info(f"No eligible {REPLAY_YEAR} games were found in this dataset.")
         st.stop()
@@ -157,7 +184,7 @@ def main():
         for player, name in labels.items()
     }
     pitcher_ids = sorted(labels, key=lambda player: labels[player].casefold())
-    defaults = pitcher_ids.index(SCHERZER) if SCHERZER in labels else 0
+    defaults = pitcher_ids.index(DEFAULT_PITCHER) if DEFAULT_PITCHER in labels else 0
     picker, matchup_filter = st.columns((2, 3))
     with picker:
         pitcher = st.selectbox("Pitcher", pitcher_ids, index=defaults, format_func=labels.__getitem__)
@@ -176,20 +203,23 @@ def main():
         game = st.selectbox("Game", list(game_labels), format_func=game_labels.__getitem__, key=f"game-{pitcher}")
 
     try:
-        replay = cached_pitcher(clean, clean_version, pitcher, checkpoint, model_version)
-    except (OSError, ValueError, IndexError, KeyError) as error:
-        st.error(f"Could not read this pitcher’s history. {error}")
+        pitches = cached_pitcher(clean, clean_version, pitcher)
+    except (OSError, ValueError, KeyError) as error:
+        st.error(f"Could not read this pitcher’s 2025 pitches. {error}")
         st.stop()
     try:
         names = cached_names(args.names, args.names.stat().st_mtime_ns)
     except (OSError, ValueError):
         names = {}
 
-    game_pitches = replay.pitches.loc[replay.pitches["game_pk"] == game]
-    selection = (pitcher, game, clean_version, model_version)
+    game_pitches = pitches.loc[pitches["game_pk"] == game]
+    selection = (pitcher, game, clean_version)
     if st.session_state.get("selection") != selection:
         st.session_state.selection = selection
         st.session_state.pitch_index = 0
+        reset_result()
+    if "checkpoint" not in st.session_state or st.session_state.checkpoint != checkpoint:
+        st.session_state.checkpoint = checkpoint
         reset_result()
 
     index = st.session_state.pitch_index
@@ -208,25 +238,28 @@ def main():
 
     prediction = st.session_state.prediction
     revealed = st.session_state.revealed
-    predicted = zone_for_catcher(prediction[0], pitch.stand) if prediction else None
+    predicted = prediction.zone if prediction else None
     actual = None
     if revealed and pd.notna(pitch.zone_class) and pitch.zone_class in ZONE_CLASSES:
         actual = int(pitch.zone_class)
     st.html('<div class="chart-label">Catcher’s view</div>')
     st.image(
-        strike_zone(pitch.stand, predicted, actual),
+        strike_zone(pitch.stand, predicted, actual, placeholder=placeholder),
         width=448,
-        alt=chart_description(pitch.stand, predicted, actual),
+        alt=chart_description(pitch.stand, predicted, actual, placeholder=placeholder),
     )
-    st.html(compare_zones(prediction, revealed, actual, pitch.stand))
+    st.html(compare_zones(prediction, revealed, actual, pitch.stand, placeholder))
+    if st.session_state.prediction_error:
+        st.error(st.session_state.prediction_error)
 
     with st.container(key="replay-controls"):
         action, previous, following = st.columns((2, 1, 1))
         with action:
-            if prediction is None:
+            if prediction is None and not predictor_issue:
                 st.button(
-                    "Predict zone", type="primary", width="stretch",
-                    on_click=run_prediction, args=(replay, model, pitch_key),
+                    "Show placeholder" if placeholder else "Run prediction",
+                    type="primary", width="stretch", on_click=run_prediction,
+                    args=(predictor, clean, checkpoint, pitcher, pitch_key),
                 )
             else:
                 st.button(
