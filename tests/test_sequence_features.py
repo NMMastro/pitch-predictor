@@ -23,6 +23,7 @@ from features.sequence_features import (
     CTX_NUMERIC,
     SEQ_CATEGORICAL,
     SEQ_NUMERIC,
+    UNK_INDEX,
     _gather_index,
     build_dataset,
 )
@@ -102,6 +103,33 @@ def test_window_holds_the_pitchers_own_history_in_order(data):
             assert not data["pad_mask"][t, k]
             assert pitcher[source] == pitcher[t]
             assert data["seq_cat"][t, k, col] == type_code[source]
+
+
+def test_unseen_pitchers_share_an_embedding_but_keep_separate_histories(clean_path, tmp_path):
+    raw = pd.read_parquet(clean_path)
+    # Give the interleaved post-training pitches to two pitchers with no train rows.
+    raw.loc[raw["split"] != "train", "pitcher"] += 1000
+    path = tmp_path / "unseen_pitchers.parquet"
+    raw.to_parquet(path, index=False)
+
+    built = build_dataset(path, window=WINDOW, verbose=False)
+    table = built["table"]
+    pitcher_col = CTX_CATEGORICAL.index("pitcher")
+    type_col = SEQ_CATEGORICAL.index("type_code")
+
+    for pitcher in PITCHERS:
+        rookie = pitcher + 1000
+        rids = raw.loc[raw["pitcher"] == rookie, "rid"]
+        rows = table.index[table["rid"].isin(rids)].to_numpy()
+        first, second = rows[:2]
+
+        assert built["pad_mask"][first].all()
+        assert built["pad_mask"][second].tolist() == [True] * (WINDOW - 1) + [False]
+        assert built["seq_cat"][second, -1, type_col] == built["y"][first] + CODE_SHIFT
+        assert (built["ctx_cat"][rows, pitcher_col] == UNK_INDEX).all()
+        assert (table.loc[rows, "pitcher"] == rookie).all()
+
+    assert built["vocab_sizes"]["pitcher"] == len(PITCHERS) + CODE_SHIFT
 
 
 def test_padded_slots_hold_the_pad_index(data):
