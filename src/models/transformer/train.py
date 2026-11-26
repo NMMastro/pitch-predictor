@@ -86,11 +86,12 @@ def train_one_epoch(
     model.train()
 
     # Track loss and example counts across all batches in this epoch.
-    total_loss = 0.0
+    device = torch.device(config.device)
+    total_loss = torch.zeros((), dtype=torch.float64, device=device)
     total_examples = 0
 
     for batch in loader:
-        batch = to_device(batch, config.device)
+        batch = to_device(batch, device)
 
         # Clear gradients from the previous batch.
         optimizer.zero_grad()
@@ -111,11 +112,13 @@ def train_one_epoch(
 
         # Weight each batch's mean loss by its number of examples.
         batch_size = len(batch["y"])
-        total_loss += loss.item() * batch_size
+        # Keep the running total on device. Calling .item() here would make
+        # the CPU wait for the GPU on every batch.
+        total_loss.add_(loss.detach(), alpha=batch_size)
         total_examples += batch_size
 
     # Return the mean loss per example as a Python number.
-    return total_loss / total_examples
+    return total_loss.item() / total_examples
 
 
 @torch.no_grad()
@@ -149,16 +152,16 @@ def predict_proba(model: nn.Module, loader) -> np.ndarray:
         # Use float64 for precise probability sums, then normalize over classes.
         logits = model(batch).double()
         probabilities = torch.softmax(logits, dim=-1)
-        probability_batches.append(probabilities)
+        probability_batches.append(probabilities.cpu())
 
     # Join the batches into (n_rows, n_classes) and return a NumPy array.
     probabilities = torch.cat(probability_batches, dim=0)
-    return probabilities.cpu().numpy()
+    return probabilities.numpy()
 
 
-def to_device(batch: dict[str, torch.Tensor], device) -> dict[str, torch.Tensor]:
+def to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     """Move every tensor in a batch dict to ``device`` (a no-op on CPU)."""
-    return {key: value.to(device) for key, value in batch.items()}
+    return {key: value.to(device, non_blocking=device.type == "cuda") for key, value in batch.items()}
 
 
 # ==============================================================================
@@ -170,11 +173,6 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def labels_of(loader) -> np.ndarray:
-    """The labels of a loader's rows, in loader order."""
-    return torch.cat([batch["y"] for batch in loader]).numpy()
 
 
 def restrict(proba: np.ndarray, classes: list[int]) -> np.ndarray:
@@ -210,14 +208,17 @@ def baseline_proba(class_counts: np.ndarray, n_rows: int) -> np.ndarray:
     return np.tile(mix, (n_rows, 1))
 
 
-def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
+def run(
+    splits, model_config: ModelConfig, train_config: TrainConfig,
+    *, checkpoint_dir: Path = CHECKPOINT_DIR,
+) -> dict:
     """Train, keep the best epoch by validation log loss, and score it."""
     set_seed(train_config.seed)
     train_loader, val_loader, test_loader = make_loaders(splits, train_config)
 
     # The baseline first: it needs no model, and it is the number every epoch
     # below is judged against.
-    y_val = labels_of(val_loader)
+    y_val = splits.val.labels
     classes = splits.train_classes
     base = score(y_val, baseline_proba(splits.class_counts, len(y_val)), classes)
     print(f"baseline (train pitch mix)  val log loss {base['log_loss']:.4f}  "
@@ -228,10 +229,10 @@ def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
         model.parameters(), lr=train_config.lr, weight_decay=train_config.weight_decay
     )
     criterion = nn.CrossEntropyLoss()
-    print(f"{count_parameters(model):,} trainable parameters\n")
+    print(f"{count_parameters(model):,} trainable parameters on {next(model.parameters()).device}\n")
 
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    checkpoint = CHECKPOINT_DIR / f"pitch_type_w{splits.window}.pt"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = checkpoint_dir / f"pitch_type_w{splits.window}.pt"
     best = {"log_loss": float("inf"), "epoch": -1}
 
     for epoch in range(1, train_config.epochs + 1):
@@ -264,8 +265,10 @@ def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
     print(f"\nbest epoch {best['epoch']}, val log loss {best['log_loss']:.4f} "
           f"vs baseline {base['log_loss']:.4f} -> saved {checkpoint}")
 
-    model.load_state_dict(torch.load(checkpoint, weights_only=False)["state_dict"])
-    y_test = labels_of(test_loader)
+    # Load the saved tensors through CPU memory to avoid duplicating the saved
+    # weights on the GPU. load_state_dict copies them into the existing model.
+    model.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True)["state_dict"])
+    y_test = splits.test.labels
     test = score(y_test, predict_proba(model, test_loader), classes)
     print(f"test log loss {test['log_loss']:.4f}  accuracy {test['accuracy']:.3f}  "
           f"top2 {test['top2_accuracy']:.3f}")
@@ -297,6 +300,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     net.add_argument("--dropout", type=float, default=ModelConfig.dropout)
 
     fit = parser.add_argument_group("training")
+    fit.add_argument("--device", choices=("cpu", "cuda"), default=TrainConfig.device)
     fit.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     fit.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     fit.add_argument("--lr", type=float, default=TrainConfig.lr)
@@ -304,6 +308,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     fit.add_argument("--seed", type=int, default=TrainConfig.seed)
 
     parser.add_argument("--scoreboard", type=Path, default=SCOREBOARD)
+    parser.add_argument("--checkpoint-dir", type=Path, default=CHECKPOINT_DIR)
     parser.add_argument("--no-log", action="store_true", help="skip the scoreboard row")
     return parser.parse_args(argv)
 
@@ -317,13 +322,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     train_config = TrainConfig(
         batch_size=args.batch_size, lr=args.lr, weight_decay=args.weight_decay,
-        epochs=args.epochs, seed=args.seed,
+        epochs=args.epochs, seed=args.seed, device=args.device,
     )
+
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable. Check the NVIDIA driver and PyTorch CUDA build.")
 
     splits = load_splits(args.clean, args.pitcher or None, args.window)
     print(f"\n{splits.summary()}\n")
 
-    result = run(splits, model_config, train_config)
+    result = run(splits, model_config, train_config, checkpoint_dir=args.checkpoint_dir)
 
     if not args.no_log:
         row = log_run(
