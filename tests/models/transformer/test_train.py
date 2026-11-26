@@ -18,8 +18,8 @@ from torch import nn
 
 from conftest import FAKE_N_CLASSES, FAKE_WINDOW as W
 from models.transformer.config import ModelConfig, TrainConfig
-from models.transformer.dataset import CTX_NUMERIC, SEQ_CATEGORICAL
-from models.transformer.train import predict_proba, train_one_epoch
+from models.transformer.dataset import CTX_NUMERIC, SEQ_CATEGORICAL, load_splits
+from models.transformer.train import predict_proba, run, train_one_epoch
 from models.transformer.transformer import PitchTransformer
 
 
@@ -58,6 +58,22 @@ class OneBatchLoader:
 
     def __len__(self) -> int:
         return self.repeats
+
+
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")),
+])
+def test_train_validate_and_reload_checkpoint_on_device(synthetic_clean_path, tmp_path, config, device):
+    splits = load_splits(synthetic_clean_path, window=W, verbose=False)
+    result = run(
+        splits, config, TrainConfig(device=device, epochs=1, batch_size=8), checkpoint_dir=tmp_path,
+    )
+    assert next(result["model"].parameters()).device.type == device
+    assert np.isfinite(result["val"]["log_loss"])
+    assert np.isfinite(result["test"]["log_loss"])
+    saved = torch.load(result["checkpoint"], map_location="cpu", weights_only=True)
+    assert saved["epoch"] == 1
 
 
 # --- train_one_epoch ----------------------------------------------------------

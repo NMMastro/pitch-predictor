@@ -1,8 +1,7 @@
 """Dataset and loaders: the pipeline's arrays -> batches of tensors.
 
-The whole v1 dataset is a few hundred megabytes, so it is built once, held in
-memory, and sliced per split. A ``PitchDataset`` is a view over those shared
-arrays, not a copy.
+The three splits share one compact feature row per pitch. A ``PitchDataset``
+gathers only the history windows needed for the current batch.
 
 Two filters decide which rows are examples, both from DESIGN_DECISIONS.md:
 
@@ -28,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler, SequentialSampler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -39,7 +38,9 @@ from features.sequence_features import (  # noqa: E402
     SEQ_CATEGORICAL,
     SEQ_NUMERIC,
     WINDOW,
-    build_dataset,
+    build,
+    build_sequence_sources,
+    gather_history,
 )
 
 __all__ = [
@@ -62,23 +63,39 @@ SPLIT_NAMES = ("train", "val", "test")
 class PitchDataset(Dataset):
     """The rows of one split, as tensors.
 
-    Holds a reference to the shared arrays plus the row numbers belonging to
-    this split, so three splits cost one copy of the data between them.
-    ``__getitem__`` returns a dict with :data:`BATCH_KEYS`; the default
-    collate function stacks those into a batch, no custom collate needed.
+    Holds a reference to the shared per-pitch arrays. ``__getitem__`` accepts
+    either one example index or a list of indices from the batch sampler.
     """
 
-    def __init__(self, arrays: dict[str, np.ndarray], rows: np.ndarray, name: str = "") -> None:
+    def __init__(
+        self, arrays: dict[str, np.ndarray], rows: np.ndarray, name: str = "", *, window: int = WINDOW,
+    ) -> None:
         self.arrays = arrays
         self.rows = np.asarray(rows, dtype=np.int64)
         self.name = name
+        self.offsets = np.arange(-window, 0)
 
     def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
-        row = self.rows[i]
-        return {key: torch.as_tensor(self.arrays[key][row]) for key in BATCH_KEYS}
+    @property
+    def labels(self) -> np.ndarray:
+        """Labels in split order, without gathering any history windows."""
+        return self.arrays["y"][self.rows]
+
+    def __getitem__(self, index: int | list[int]) -> dict[str, torch.Tensor]:
+        indices = np.asarray(index, dtype=np.intp)
+        rows = self.rows[indices.reshape(-1)]
+        seq_cat, seq_num, padding = gather_history(self.arrays, rows, self.offsets)
+        batch = {
+            "seq_cat": torch.from_numpy(seq_cat),
+            "seq_num": torch.from_numpy(seq_num),
+            "pad_mask": torch.from_numpy(padding),
+            "ctx_cat": torch.from_numpy(self.arrays["ctx_cat"][rows].astype(np.int64)),
+            "ctx_num": torch.from_numpy(self.arrays["ctx_num"][rows]),
+            "y": torch.from_numpy(self.arrays["y"][rows]),
+        }
+        return {key: value[0] for key, value in batch.items()} if indices.ndim == 0 else batch
 
     def __repr__(self) -> str:
         return f"PitchDataset({self.name!r}, {len(self)} rows)"
@@ -103,24 +120,24 @@ class SplitData:
         How often each of the ten classes appears in training, used for the
         frequency baseline.
     table:
-        The feature table behind the arrays, for inspection.
+        Row IDs and split metadata in the same order as the feature arrays.
     """
 
     def __init__(self, data: dict) -> None:
         table = data["table"]
-        self.arrays = {key: data[key] for key in BATCH_KEYS}
-        self.table = table
+        self.arrays = build_sequence_sources(table)
+        self.table = table[["rid", "pitcher", "pitcher_code", "split", "eligible"]].copy()
         self.vocab_sizes = data["vocab_sizes"]
         self.window = data["window"]
         self.scalers = data["scalers"]
 
         eligible = table["eligible"].to_numpy(dtype=bool)
-        split = table["split"].to_numpy()
+        split = table["split"]
         for name in SPLIT_NAMES:
             rows = np.flatnonzero(eligible & (split == name))
-            setattr(self, name, PitchDataset(self.arrays, rows, name))
+            setattr(self, name, PitchDataset(self.arrays, rows, name, window=self.window))
 
-        y_train = self.arrays["y"][self.train.rows]
+        y_train = self.train.labels
         self.class_counts = np.bincount(y_train, minlength=len(PITCH_CLASSES))
         self.train_classes = np.flatnonzero(self.class_counts > 0).tolist()
 
@@ -159,8 +176,10 @@ def load_splits(
     window: int = WINDOW,
     verbose: bool = True,
 ) -> SplitData:
-    """Build the arrays and wrap them as three splits."""
-    return SplitData(build_dataset(clean_path, pitcher, window, verbose))
+    """Build shared per-pitch features and wrap them as three lazy splits."""
+    if window < 1:
+        raise ValueError("window must be at least 1")
+    return SplitData({**build(clean_path, pitcher, verbose, compact=True), "window": window})
 
 
 def make_loaders(
@@ -171,12 +190,15 @@ def make_loaders(
     ``config`` is a :class:`~models.transformer.config.TrainConfig`.
     """
     def loader(dataset: PitchDataset, shuffle: bool) -> DataLoader:
+        sampler = RandomSampler(dataset) if shuffle else SequentialSampler(dataset)
+        # Treat the full list of row indices as one item so NumPy gathers a
+        # batch in one pass. DataLoader still handles pinned memory for CUDA.
         return DataLoader(
             dataset,
-            batch_size=config.batch_size,
-            shuffle=shuffle,
+            sampler=BatchSampler(sampler, config.batch_size, drop_last=False),
+            batch_size=None,
             num_workers=config.num_workers,
-            drop_last=False,
+            pin_memory=torch.device(config.device).type == "cuda",
         )
 
     return (

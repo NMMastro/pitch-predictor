@@ -95,10 +95,10 @@ class TrainConfig:
     grad_clip:
         Maximum gradient norm. ``None`` disables clipping.
     num_workers:
-        DataLoader worker processes. Keep at 0: the arrays are already in
-        memory, so workers would only add Windows process-spawn overhead.
+        DataLoader worker processes. The default 0 keeps the shared arrays in
+        the main process and works across platforms.
     device:
-        ``"cpu"``. The v1 model is small enough that a GPU buys little.
+        ``"cpu"`` by default. Use ``"cuda"`` to train on an NVIDIA GPU.
     """
 
     batch_size: int = 128

@@ -1,8 +1,9 @@
 """Sequence features: clean pitch table -> transformer inputs, kept in memory.
 
 Input:  data/clean/pitches.parquet (from clean.py), optionally one pitcher.
-Output: nothing on disk. ``build_dataset()`` returns the arrays below plus the
-        table they came from, so row i of every array is row i of the table.
+Output: nothing on disk. Training stores one feature row per pitch and gathers
+        the windows below per batch. ``build_dataset()`` materializes all the
+        windows for small diagnostics and tests.
 
 Every input for a pitch uses only its pre-pitch state and earlier pitches.
 History never resets at plate appearances, games, seasons or splits, so every
@@ -75,6 +76,7 @@ from features.schema import (  # noqa: E402
     PITCH_CLASSES,
     PITCH_RESULTS,
     PITCHER_CHRONO_KEYS,
+    PRE_PITCH_COLUMNS,
     ZONE_CLASSES,
 )
 
@@ -100,6 +102,10 @@ SEQ_NUMERIC = ["release_speed", "plate_x_rel", "plate_z"]
 
 # --- 6a. Current-pitch inputs: known before the pitch, fed directly ---
 INPUT_EMBED = ["batter", "pitcher", "fielder_2"]  # fielder_2 = catcher
+
+# Keep the real pitcher ID for window grouping and the existing "pitcher"
+# embedding key for model configs and checkpoints.
+_ID_CODE_COLUMNS = {"pitcher": "pitcher_code"}
 
 # Pre-pitch categoricals. The alignments are text in the clean table and the
 # inning is small and non-linear, so all three are embedded rather than scaled
@@ -156,10 +162,20 @@ UNK = -1              # encode.py's "none" code; CODE_SHIFT maps it to UNK_INDEX
 # 2. LOAD
 # ==============================================================================
 
-def load(path: str | Path = CLEAN_PATH, pitcher: int | None = None) -> pd.DataFrame:
+_INPUT_COLUMNS = [
+    "rid", "split", "eligible", "game_pk", "at_bat_number", "pitch_number",
+    *INPUT_EMBED, *PRE_PITCH_COLUMNS,
+    "pitch_class", "zone_class", "description", "events", "release_speed", "plate_x", "plate_z",
+]
+
+
+def load(
+    path: str | Path = CLEAN_PATH, pitcher: int | None = None,
+    *, columns: list[str] | None = None,
+) -> pd.DataFrame:
     """The clean table, optionally one pitcher's rows."""
     filters = [("pitcher", "==", pitcher)] if pitcher is not None else None
-    return pd.read_parquet(path, filters=filters)
+    return pd.read_parquet(path, columns=columns, filters=filters)
 
 
 # ==============================================================================
@@ -190,22 +206,23 @@ def encode_ids(df: pd.DataFrame, min_batter_count: int = MIN_BATTER_COUNT) -> pd
     """Embedding ids -> contiguous codes with an UNK bucket for rare or unseen ids.
 
     The vocabulary is built from train rows only: an id gets its own code if it
-    appears in train at least the minimum number of times. Ids that are rare in
-    train, or first appear in val/test, map to UNK, so the model never reads an
-    untrained embedding row. Codes start at 0; UNK is -1.
+    appears in train at least the minimum number of times. Rare and unseen IDs
+    share the UNK code instead of receiving their own embedding rows. Codes
+    start at 0; UNK is -1. The raw pitcher ID stays in ``pitcher``.
     """
     for col in INPUT_EMBED:
-        df = _encode_id(df, col, min_batter_count if col == "batter" else 1)
+        code_col = _ID_CODE_COLUMNS.get(col, col)
+        min_count = min_batter_count if col == "batter" else 1
+        df[code_col] = _encode_id(df, col, min_count)
     return df
 
 
-def _encode_id(df: pd.DataFrame, col: str, min_count: int) -> pd.DataFrame:
+def _encode_id(df: pd.DataFrame, col: str, min_count: int) -> pd.Series:
     """Map an id column to contiguous int codes; ids rare or absent in train -> UNK."""
     counts = df.loc[df["split"] == "train", col].value_counts()
     keep = set(counts[counts >= min_count].index)
     codes = {v: i for i, v in enumerate(sorted(keep))}
-    df[col] = df[col].map(lambda v: codes.get(v, UNK)).astype("int64")
-    return df
+    return df[col].map(codes).fillna(UNK).astype("int32")
 
 
 def vocab_sizes(df: pd.DataFrame) -> dict[str, int]:
@@ -219,7 +236,8 @@ def vocab_sizes(df: pd.DataFrame) -> dict[str, int]:
         if col in TAXONOMY_SIZES:
             n_values = TAXONOMY_SIZES[col]
         else:
-            n_values = int(df[col].max()) + 1  # codes are 0..n-1, or -1 for UNK only
+            code_col = _ID_CODE_COLUMNS.get(col, col)
+            n_values = int(df[code_col].max()) + 1  # 0..n-1, or -1 for UNK only
         sizes[col] = max(n_values, 0) + CODE_SHIFT
     return sizes
 
@@ -242,7 +260,7 @@ def fit_scaler(train: pd.DataFrame, cols: list[str]) -> StandardScaler:
     return scaler
 
 
-def apply_scaler(df: pd.DataFrame, scaler: StandardScaler) -> pd.DataFrame:
+def apply_scaler(df: pd.DataFrame, scaler: StandardScaler, *, copy: bool = True) -> pd.DataFrame:
     """Apply a pre-fit scaler to every row, then fill the gaps with 0.
 
     StandardScaler passes NaN through, and 0 is the train mean of a
@@ -250,7 +268,7 @@ def apply_scaler(df: pd.DataFrame, scaler: StandardScaler) -> pd.DataFrame:
     :func:`missing_flags` records that it happened.
     """
     cols = list(scaler.feature_names_in_)
-    out = df.copy()
+    out = df.copy() if copy else df
     scaled = scaler.transform(out[cols].astype("float64"))
     out[cols] = np.nan_to_num(scaled, nan=0.0, posinf=0.0, neginf=0.0)
     return out
@@ -260,29 +278,58 @@ def apply_scaler(df: pd.DataFrame, scaler: StandardScaler) -> pd.DataFrame:
 # 5. SEQUENCES
 # ==============================================================================
 
+def _history_starts(table: pd.DataFrame) -> np.ndarray:
+    """For each row, find its pitcher's first row in the pitcher-sorted table."""
+    # Use raw IDs here since unrelated pitchers can share the UNK model code.
+    pitcher = table["pitcher"].to_numpy()
+    boundaries = np.flatnonzero(pitcher[1:] != pitcher[:-1]) + 1
+    starts = np.zeros(len(table), dtype=np.int64)
+    starts[boundaries] = boundaries
+    np.maximum.accumulate(starts, out=starts)
+    return starts
+
+
+def _window_index(
+    rows: np.ndarray, starts: np.ndarray, offsets: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    # Every row looks backward. Positions before this pitcher's first row
+    # point to a safe index and are masked after gathering.
+    previous = rows[:, None] + offsets
+    padding = previous < starts[:, None]
+    previous[padding] = 0
+    return previous, padding
+
+
 def _gather_index(table: pd.DataFrame, window: int) -> tuple[np.ndarray, np.ndarray]:
-    """Row indices of each pitch's previous ``window`` pitches, and a padding mask.
+    """Eager history index for a small, pitcher-sorted table."""
+    return _window_index(np.arange(len(table)), _history_starts(table), np.arange(-window, 0))
 
-    Vectorised, because the Python version was O(n x window) and the window can
-    be hundreds of pitches long.
 
-    ``table`` must already be sorted by :data:`PITCHER_CHRONO_KEYS`, so one
-    pitcher's rows are contiguous and in real-time order. Within a pitcher,
-    pitch ``p`` wants positions ``p-window .. p-1``; adding the index of that
-    pitcher's first row turns those into table row numbers.
+def build_sequence_sources(table: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Store one feature row per pitch in the order returned by :func:`build`."""
+    ctx_code_columns = [_ID_CODE_COLUMNS.get(col, col) for col in CTX_CATEGORICAL]
+    arrays = {
+        "seq_cat": _int_matrix(table, SEQ_CATEGORICAL),
+        "seq_num": _float_matrix(table, SEQ_NUMERIC),
+        "ctx_cat": _int_matrix(table, ctx_code_columns),
+        "ctx_num": _float_matrix(table, CTX_NUMERIC),
+        "y": table[LABEL].to_numpy(dtype=np.int64),
+        "history_start": _history_starts(table),
+    }
+    _check(arrays)
+    return arrays
 
-    Returns ``(rows, pad)``, both ``(n, window)``. Where ``pad`` is True the
-    slot has no earlier pitch and ``rows`` holds a harmless 0.
-    """
-    n = len(table)
-    position = table.groupby("pitcher", sort=False).cumcount().to_numpy()
-    first_row = np.arange(n) - position  # table index of this pitcher's first pitch
 
-    offsets = np.arange(-window, 0)                       # (window,) -window .. -1
-    relative = position[:, None] + offsets[None, :]       # (n, window)
-    pad = relative < 0                                    # before the pitcher's first pitch
-    rows = np.where(pad, 0, first_row[:, None] + relative)
-    return rows, pad
+def gather_history(
+    arrays: dict[str, np.ndarray], rows: np.ndarray, offsets: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build only the history windows requested by the caller."""
+    previous, padding = _window_index(rows, arrays["history_start"][rows], offsets)
+    seq_cat = arrays["seq_cat"][previous].astype(np.int64, copy=False)
+    seq_num = arrays["seq_num"][previous]
+    seq_cat[padding] = PAD_INDEX
+    seq_num[padding] = 0.0
+    return seq_cat, seq_num, padding
 
 
 def build_sequences(table: pd.DataFrame, window: int = WINDOW) -> dict[str, np.ndarray]:
@@ -293,41 +340,29 @@ def build_sequences(table: pd.DataFrame, window: int = WINDOW) -> dict[str, np.n
     docstring for the shapes. Nothing is written to disk and nothing is fit.
     """
     table = table.sort_values(PITCHER_CHRONO_KEYS).reset_index(drop=True)
-    rows, pad = _gather_index(table, window)
-
-    # Previous pitches: read the per-pitch values, then gather them per slot.
-    seq_cat_src = _int_matrix(table, SEQ_CATEGORICAL)      # (n, 3), shifted
-    seq_num_src = _float_matrix(table, SEQ_NUMERIC)        # (n, 3)
-
-    # Indexing then overwriting beats np.where here: one (n, window, 3) array
-    # instead of two, which matters at window 400.
-    seq_cat = seq_cat_src[rows]
-    seq_cat[pad] = PAD_INDEX
-    seq_num = seq_num_src[rows]
-    seq_num[pad] = 0.0
-
-    out = {
+    arrays = build_sequence_sources(table)
+    seq_cat, seq_num, pad = gather_history(arrays, np.arange(len(table)), np.arange(-window, 0))
+    return {
         "seq_cat": seq_cat,
         "seq_num": seq_num,
-        "pad_mask": np.ascontiguousarray(pad),
-        "ctx_cat": _int_matrix(table, CTX_CATEGORICAL),
-        "ctx_num": _float_matrix(table, CTX_NUMERIC),
-        "y": table[LABEL].to_numpy().astype(np.int64),
+        "pad_mask": pad,
+        "ctx_cat": arrays["ctx_cat"].astype(np.int64),
+        "ctx_num": arrays["ctx_num"],
+        "y": arrays["y"],
     }
-    _check(out)
-    return out
 
 
 def _int_matrix(table: pd.DataFrame, columns: list[str]) -> np.ndarray:
-    """``(n, len(columns))`` int64 of the given code columns, shifted past PAD/UNK."""
-    values = table[columns].to_numpy(dtype=np.int64)
+    """Store shifted integer codes compactly. Batches convert them to int64."""
+    values = table[columns].to_numpy(dtype=np.int32)
     return np.ascontiguousarray(values + CODE_SHIFT)
 
 
 def _float_matrix(table: pd.DataFrame, columns: list[str]) -> np.ndarray:
     """``(n, len(columns))`` float32 of the given columns, nulls as 0."""
-    values = table[columns].to_numpy(dtype=np.float64, na_value=np.nan)
-    return np.ascontiguousarray(np.nan_to_num(values, nan=0.0), dtype=np.float32)
+    values = table[columns].to_numpy(dtype=np.float32, na_value=np.nan, copy=True)
+    values[np.isnan(values)] = 0.0
+    return np.ascontiguousarray(values)
 
 
 def _check(arrays: dict[str, np.ndarray]) -> None:
@@ -346,27 +381,31 @@ def _check(arrays: dict[str, np.ndarray]) -> None:
 # 6. ORCHESTRATION
 # ==============================================================================
 
-def build(path: str | Path = CLEAN_PATH, pitcher: int | None = None, verbose: bool = True) -> dict:
+def build(
+    path: str | Path = CLEAN_PATH, pitcher: int | None = None, verbose: bool = True,
+    *, compact: bool = False,
+) -> dict:
     """Load -> encode -> code -> ids -> missing flags -> scale.
 
     Returns the encoded, scaled table in :data:`PITCHER_CHRONO_KEYS` order so
     its rows line up with :func:`build_sequences`, the two scalers fit on its
     train rows, and the embedding vocabulary sizes.
     """
-    table = encode(load(path, pitcher)).sort_values(PITCHER_CHRONO_KEYS, ignore_index=True)
+    columns = _INPUT_COLUMNS if compact else None
+    table = encode(load(path, pitcher, columns=columns)).sort_values(PITCHER_CHRONO_KEYS, ignore_index=True)
     table = add_codes(table)
     table = encode_ids(table)
     table = missing_flags(table)
 
-    train = table[table["split"] == "train"]
-    if train.empty:
+    train = table["split"] == "train"
+    if not train.any():
         raise ValueError("no train rows; the scalers have nothing to fit on")
     scalers = {
-        "ctx": fit_scaler(train, CONTINUOUS_INPUTS),
-        "seq": fit_scaler(train, SEQ_NUMERIC),
+        "ctx": fit_scaler(table.loc[train, CONTINUOUS_INPUTS], CONTINUOUS_INPUTS),
+        "seq": fit_scaler(table.loc[train, SEQ_NUMERIC], SEQ_NUMERIC),
     }
     for scaler in scalers.values():
-        table = apply_scaler(table, scaler)
+        table = apply_scaler(table, scaler, copy=False)
 
     if verbose:
         counts = table.groupby("split", observed=True).agg(
@@ -384,9 +423,8 @@ def build_dataset(
 ) -> dict:
     """Everything a model needs: the arrays, the table behind them, and metadata.
 
-    The one call ``src/models/transformer/dataset.py`` makes. Keys: the arrays from
-    :func:`build_sequences`, plus ``table``, ``scalers``, ``vocab_sizes`` and
-    ``window``.
+    Use this eager helper on small inputs. Training uses the per-pitch arrays
+    from :func:`build_sequence_sources` instead.
     """
     built = build(path, pitcher, verbose)
     arrays = build_sequences(built["table"], window)
@@ -397,27 +435,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clean", type=Path, default=CLEAN_PATH)
     parser.add_argument("--pitcher", type=int, default=453286, help="MLBAM id (default: Scherzer); 0 = every pitcher")
-    parser.add_argument("--window", type=int, default=WINDOW)
+    parser.add_argument("--window", type=int, default=WINDOW, help="history length for the sample batch")
     args = parser.parse_args()
+    if args.window < 1:
+        parser.error("--window must be at least 1")
 
     start = time.time()
-    data = build_dataset(args.clean, args.pitcher or None, args.window)
+    data = build(args.clean, args.pitcher or None, compact=True)
+    arrays = build_sequence_sources(data["table"])
+    rows = np.arange(min(128, len(data["table"])))
+    seq_cat, seq_num, pad = gather_history(arrays, rows, np.arange(-args.window, 0))
 
-    print(f"\nArrays (window {args.window}, {time.time() - start:.0f}s)")
-    nans = 0
-    for name in ("seq_cat", "seq_num", "pad_mask", "ctx_cat", "ctx_num", "y"):
-        array = data[name]
+    print(f"\nSample batch (window {args.window}, {time.time() - start:.0f}s)")
+    for name, array in (
+        ("seq_cat", seq_cat), ("seq_num", seq_num), ("pad_mask", pad),
+        ("ctx_cat", arrays["ctx_cat"][rows].astype(np.int64)),
+        ("ctx_num", arrays["ctx_num"][rows]), ("y", arrays["y"][rows]),
+    ):
         print(f"  {name:9} {str(array.shape):18} {array.dtype}")
-        if array.dtype.kind == "f":
-            nans += int(np.isnan(array).sum())
-    print(f"  {nans} NaNs")
 
     print("\nEmbedding vocabularies")
     for col, size in data["vocab_sizes"].items():
         print(f"  {col:24} {size}")
 
-    pad_share = data["pad_mask"].mean()
-    print(f"\n{pad_share:.1%} of sequence slots are padding")
+    print(f"\n{pad.mean():.1%} of sample sequence slots are padding")
 
 
 if __name__ == "__main__":

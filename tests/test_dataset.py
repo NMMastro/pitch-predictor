@@ -14,6 +14,7 @@ import torch
 
 from conftest import SYNTHETIC_MIN_PRIOR, SYNTHETIC_PITCHERS
 from features.schema import PITCH_CLASSES
+from features.sequence_features import build_dataset
 from models.transformer.config import TrainConfig
 from models.transformer.dataset import (
     BATCH_KEYS,
@@ -99,7 +100,7 @@ def test_one_example_has_the_expected_keys_shapes_and_dtypes(splits):
     assert example["pad_mask"].dtype == torch.bool
 
 
-def test_default_collate_stacks_a_batch(splits):
+def test_loader_gathers_a_batch(splits):
     config = TrainConfig(batch_size=4)
     train_loader, _, _ = make_loaders(splits, config)
     batch = next(iter(train_loader))
@@ -109,6 +110,20 @@ def test_default_collate_stacks_a_batch(splits):
     assert batch["seq_num"].shape == (4, WINDOW, 3)
     assert batch["pad_mask"].shape == (4, WINDOW)
     assert batch["y"].shape == (4,)
+
+
+def test_lazy_batches_match_eager_examples(synthetic_clean_path, splits):
+    eager = build_dataset(synthetic_clean_path, window=WINDOW, verbose=False)
+    loaders = make_loaders(splits, TrainConfig(batch_size=7), shuffle_train=False)
+    assert splits.arrays["seq_cat"].ndim == splits.arrays["seq_num"].ndim == 2
+    assert "pad_mask" not in splits.arrays  # Built per batch alongside the history.
+
+    for name, loader in zip(SPLIT_NAMES, loaders):
+        rows = getattr(splits, name).rows
+        batches = list(loader)
+        for key in BATCH_KEYS:
+            actual = torch.cat([batch[key] for batch in batches])
+            torch.testing.assert_close(actual, torch.as_tensor(eager[key][rows]), rtol=0, atol=0)
 
 
 def test_a_loader_covers_its_split_exactly_once(splits):
