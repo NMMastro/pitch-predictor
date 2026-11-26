@@ -87,6 +87,9 @@ def _synthetic_table() -> pd.DataFrame:
             })
 
     table = pd.DataFrame(rows).sort_values("rid").reset_index(drop=True)
+    table["game_date"] = pd.to_datetime(table["game_year"], format="%Y") + pd.to_timedelta(
+        table["game_pk"] - 1, unit="D",
+    )
     table["pitch_class"] = pd.Categorical(table["pitch_class"], categories=PITCH_CLASSES)
     for col in ("description", "if_fielding_alignment", "of_fielding_alignment"):
         table[col] = table[col].astype("category")

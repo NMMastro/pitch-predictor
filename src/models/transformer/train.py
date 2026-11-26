@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from evaluation import evaluate, log_run  # noqa: E402
 from features.schema import CLEAN_PATH, PITCH_CLASSES  # noqa: E402
 from models.transformer.config import SCHERZER, ModelConfig, TrainConfig  # noqa: E402
+from features.sequence_features import PITCH_MIX_SLICES  # noqa: E402
 from models.transformer.dataset import load_splits, make_loaders  # noqa: E402
 from models.transformer.transformer import build_model, count_parameters  # noqa: E402
 
@@ -231,7 +232,8 @@ def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
     print(f"{count_parameters(model):,} trainable parameters\n")
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    checkpoint = CHECKPOINT_DIR / f"pitch_type_w{splits.window}.pt"
+    mix_suffix = "" if splits.pitch_mix == "none" else f"_mix_{splits.pitch_mix}"
+    checkpoint = CHECKPOINT_DIR / f"pitch_type_w{splits.window}{mix_suffix}.pt"
     best = {"log_loss": float("inf"), "epoch": -1}
 
     for epoch in range(1, train_config.epochs + 1):
@@ -248,6 +250,7 @@ def run(splits, model_config: ModelConfig, train_config: TrainConfig) -> dict:
                     "model_config": asdict(model.config),
                     "train_classes": classes,
                     "window": splits.window,
+                    "pitch_mix": splits.pitch_mix,
                     "epoch": epoch,
                 },
                 checkpoint,
@@ -288,6 +291,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     data.add_argument("--clean", type=Path, default=CLEAN_PATH)
     data.add_argument("--pitcher", type=int, default=SCHERZER, help="MLBAM id; 0 = every pitcher")
     data.add_argument("--window", type=int, default=ModelConfig.window)
+    data.add_argument(
+        "--pitch-mix", choices=PITCH_MIX_SLICES, default="none",
+        help="append smoothed last-200 pitch rates, optionally including this game",
+    )
 
     net = parser.add_argument_group("model")
     net.add_argument("--d-model", type=int, default=ModelConfig.d_model)
@@ -320,7 +327,7 @@ def main(argv: list[str] | None = None) -> None:
         epochs=args.epochs, seed=args.seed,
     )
 
-    splits = load_splits(args.clean, args.pitcher or None, args.window)
+    splits = load_splits(args.clean, args.pitcher or None, args.window, pitch_mix=args.pitch_mix)
     print(f"\n{splits.summary()}\n")
 
     result = run(splits, model_config, train_config)
@@ -334,6 +341,7 @@ def main(argv: list[str] | None = None) -> None:
             features_version="sequence_features@shifted-codes+pad-mask",
             split="val",
             pitcher=args.pitcher,
+            pitch_mix=args.pitch_mix,
             classes=result["classes"],
             baseline_log_loss=result["baseline"]["log_loss"],
             test_log_loss=result["test"]["log_loss"],

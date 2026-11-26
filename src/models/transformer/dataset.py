@@ -112,6 +112,7 @@ class SplitData:
         self.table = table
         self.vocab_sizes = data["vocab_sizes"]
         self.window = data["window"]
+        self.pitch_mix = data.get("pitch_mix", "none")
         self.scalers = data["scalers"]
 
         eligible = table["eligible"].to_numpy(dtype=bool)
@@ -158,9 +159,11 @@ def load_splits(
     pitcher: int | None = None,
     window: int = WINDOW,
     verbose: bool = True,
+    *,
+    pitch_mix: str = "none",
 ) -> SplitData:
     """Build the arrays and wrap them as three splits."""
-    return SplitData(build_dataset(clean_path, pitcher, window, verbose))
+    return SplitData(build_dataset(clean_path, pitcher, window, verbose, pitch_mix=pitch_mix))
 
 
 def make_loaders(

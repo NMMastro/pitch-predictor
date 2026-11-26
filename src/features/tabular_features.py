@@ -154,13 +154,21 @@ def game_state(df: pd.DataFrame) -> pd.DataFrame:
 
 def pitcher_types(df: pd.DataFrame, league_types: np.ndarray) -> pd.DataFrame:
     """The pitcher's pitch-type mix over his earlier pitches, five ways."""
-    mixes = _slice_mixes(df, one_hot(df["type_code"], len(PITCH_CLASSES)), league_types)
-
-    columns = {}
-    for name, mix in mixes.items():
-        columns |= _mix_columns(f"p_type_{name}", mix, PITCH_CLASSES)
+    columns = pitcher_type_mix_columns(df, league_types, SLICES)
     columns["pitcher_prior_pitches"] = df["pitcher_prior_pitches"].to_numpy()
     return pd.DataFrame(columns)
+
+
+def pitcher_type_mix_columns(
+    df: pd.DataFrame, league_types: np.ndarray, slices: list[str] | tuple[str, ...],
+) -> dict[str, np.ndarray]:
+    """Selected pitch-type mixes for rows in chronological order within pitcher."""
+    mixes = _slice_mixes(df, one_hot(df["type_code"], len(PITCH_CLASSES)), league_types, slices)
+    return {
+        column: values
+        for name, mix in mixes.items()
+        for column, values in _mix_columns(f"p_type_{name}", mix, PITCH_CLASSES).items()
+    }
 
 
 def pitcher_zones(df: pd.DataFrame, league_zones: np.ndarray) -> pd.DataFrame:
@@ -304,17 +312,32 @@ def shrink(counts: np.ndarray, broader: np.ndarray, pseudo_pitches: float = PSEU
     return ((counts + pseudo_pitches * broader) / (total + pseudo_pitches)).astype(np.float32)
 
 
-def _slice_mixes(df: pd.DataFrame, onehot: np.ndarray, league: np.ndarray) -> dict[str, np.ndarray]:
-    """The pitcher's mix of ``onehot`` for each slice in :data:`SLICES`."""
+def _slice_mixes(
+    df: pd.DataFrame, onehot: np.ndarray, league: np.ndarray,
+    slices: list[str] | tuple[str, ...] = SLICES,
+) -> dict[str, np.ndarray]:
+    """The pitcher's mix of ``onehot`` for each requested slice."""
     pitcher = group_ids(df, ["pitcher"])
     career = shrink(prior_counts(onehot, pitcher), league)
-    return {
-        "career": career,
-        "last200": shrink(prior_window_counts(onehot, pitcher, RECENT_PITCHES), career),
-        "vs_hand": shrink(prior_counts(onehot, group_ids(df, ["pitcher", "is_LHB"])), career),
-        "count": shrink(prior_counts(onehot, group_ids(df, ["pitcher", "balls", "strikes"])), career),
-        "game": shrink(prior_counts(onehot, group_ids(df, ["pitcher", "game_pk"])), career),
-    }
+    mixes = {}
+    if "career" in slices:
+        mixes["career"] = career
+    if "last200" in slices:
+        mixes["last200"] = shrink(prior_window_counts(onehot, pitcher, RECENT_PITCHES), career)
+    if "vs_hand" in slices:
+        mixes["vs_hand"] = shrink(prior_counts(onehot, group_ids(df, ["pitcher", "is_LHB"])), career)
+    if "count" in slices:
+        mixes["count"] = shrink(prior_counts(onehot, group_ids(df, ["pitcher", "balls", "strikes"])), career)
+    if "game" in slices:
+        mixes["game"] = shrink(prior_counts(onehot, group_ids(df, ["pitcher", "game_pk"])), career)
+    return mixes
+
+
+def league_pitch_type_mix(history: pd.DataFrame, pitch_dates: pd.Series) -> np.ndarray:
+    """Pitch-type prior from all league games before each requested date."""
+    dates, day = np.unique(history["game_date"].to_numpy(), return_inverse=True)
+    types = _mix_before_each_day(day, history["pitch_class"].cat.codes.to_numpy(), len(PITCH_CLASSES))
+    return types[np.searchsorted(dates, pitch_dates)]
 
 
 def _mix_before_each_day(day: np.ndarray, codes: np.ndarray, k: int) -> np.ndarray:

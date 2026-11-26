@@ -33,8 +33,8 @@ the window length. Nothing contains NaN.
                               "ignore this position" convention)
   ctx_cat   (n, 6)    int64    this pitch: batter, pitcher, catcher, the two
                               fielding alignments, inning
-  ctx_num   (n, 26)   float32  this pitch: count, base/out state, score, zone
-                              size, rest, ages and the 0/1 flags
+  ctx_num   (n, C)    float32  26 base context inputs plus any selected pitch
+                              mixes (10 rates per mix)
   y         (n,)      int64    the label: index into schema.PITCH_CLASSES
 
 Slot W-1 of each window is the pitcher's immediately previous pitch and slot 0
@@ -77,6 +77,7 @@ from features.schema import (  # noqa: E402
     PITCHER_CHRONO_KEYS,
     ZONE_CLASSES,
 )
+from features.tabular_features import league_pitch_type_mix, pitcher_type_mix_columns  # noqa: E402
 
 # ==============================================================================
 # 1. MODEL INPUTS (DESIGN_DECISIONS.md Section 6)
@@ -132,6 +133,11 @@ CTX_NUMERIC = (
     + FIRST_PITCH_FLAGS
     + MISSING_FLAGS
 )
+PITCH_MIX_SLICES = {
+    "none": (),
+    "last200": ("last200",),
+    "last200-game": ("last200", "game"),
+}
 
 # The label.
 LABEL = "type_code"
@@ -285,7 +291,9 @@ def _gather_index(table: pd.DataFrame, window: int) -> tuple[np.ndarray, np.ndar
     return rows, pad
 
 
-def build_sequences(table: pd.DataFrame, window: int = WINDOW) -> dict[str, np.ndarray]:
+def build_sequences(
+    table: pd.DataFrame, window: int = WINDOW, *, ctx_numeric: list[str] = CTX_NUMERIC,
+) -> dict[str, np.ndarray]:
     """The transformer's input arrays for every row of ``table``.
 
     ``table`` is the output of :func:`build`, already encoded, scaled and
@@ -311,7 +319,7 @@ def build_sequences(table: pd.DataFrame, window: int = WINDOW) -> dict[str, np.n
         "seq_num": seq_num,
         "pad_mask": np.ascontiguousarray(pad),
         "ctx_cat": _int_matrix(table, CTX_CATEGORICAL),
-        "ctx_num": _float_matrix(table, CTX_NUMERIC),
+        "ctx_num": _float_matrix(table, ctx_numeric),
         "y": table[LABEL].to_numpy().astype(np.int64),
     }
     _check(out)
@@ -346,14 +354,31 @@ def _check(arrays: dict[str, np.ndarray]) -> None:
 # 6. ORCHESTRATION
 # ==============================================================================
 
-def build(path: str | Path = CLEAN_PATH, pitcher: int | None = None, verbose: bool = True) -> dict:
+def build(
+    path: str | Path = CLEAN_PATH, pitcher: int | None = None, verbose: bool = True,
+    *, pitch_mix: str = "none",
+) -> dict:
     """Load -> encode -> code -> ids -> missing flags -> scale.
 
     Returns the encoded, scaled table in :data:`PITCHER_CHRONO_KEYS` order so
     its rows line up with :func:`build_sequences`, the two scalers fit on its
     train rows, and the embedding vocabulary sizes.
     """
+    if pitch_mix not in PITCH_MIX_SLICES:
+        raise ValueError(f"unknown pitch mix: {pitch_mix!r}")
+    slices = PITCH_MIX_SLICES[pitch_mix]
     table = encode(load(path, pitcher)).sort_values(PITCHER_CHRONO_KEYS, ignore_index=True)
+    ctx_numeric = CTX_NUMERIC
+    if slices:
+        # A pitcher filter limits the examples, but all pitchers still contribute
+        # to the league prior. The prior uses only dates before the current game.
+        history = table if pitcher is None else pd.read_parquet(path, columns=["game_date", "pitch_class"])
+        league = league_pitch_type_mix(history, table["game_date"])
+        del history
+        mixes = pitcher_type_mix_columns(table, league, slices)
+        table = pd.concat([table, pd.DataFrame(mixes, index=table.index)], axis=1)
+        ctx_numeric = [*CTX_NUMERIC, *mixes]
+        del league, mixes
     table = add_codes(table)
     table = encode_ids(table)
     table = missing_flags(table)
@@ -373,7 +398,10 @@ def build(path: str | Path = CLEAN_PATH, pitcher: int | None = None, verbose: bo
             rows=("rid", "size"), eligible=("eligible", "sum")
         )
         print(counts.to_string())
-    return {"table": table, "scalers": scalers, "vocab_sizes": vocab_sizes(table)}
+    return {
+        "table": table, "scalers": scalers, "vocab_sizes": vocab_sizes(table),
+        "ctx_numeric": ctx_numeric, "pitch_mix": pitch_mix,
+    }
 
 
 def build_dataset(
@@ -381,6 +409,8 @@ def build_dataset(
     pitcher: int | None = None,
     window: int = WINDOW,
     verbose: bool = True,
+    *,
+    pitch_mix: str = "none",
 ) -> dict:
     """Everything a model needs: the arrays, the table behind them, and metadata.
 
@@ -388,8 +418,8 @@ def build_dataset(
     :func:`build_sequences`, plus ``table``, ``scalers``, ``vocab_sizes`` and
     ``window``.
     """
-    built = build(path, pitcher, verbose)
-    arrays = build_sequences(built["table"], window)
+    built = build(path, pitcher, verbose, pitch_mix=pitch_mix)
+    arrays = build_sequences(built["table"], window, ctx_numeric=built["ctx_numeric"])
     return {**arrays, **built, "window": window}
 
 
